@@ -84,6 +84,7 @@ atproto-oauth/
 │   ├── pkce_rfc7636_vectors.rs
 │   ├── discovery_tests.rs
 │   ├── token_exchange_tests.rs
+│   ├── kani_harnesses.rs       # Formal mathematical proofs via cargo-kani
 │   └── adversarial_hardening_tests.rs
 ├── Cargo.toml
 ├── LICENSE-MIT
@@ -127,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-## 5. Security & Threat Model
+## 5. Security, Threat Model & Formal Proofs
 
 1. **Token Theft & Replay (RFC 9449)**:
    - Tokens issued by the PDS are cryptographically bound to the client's ephemeral ECDSA key. Even if an access token is intercepted in transit, it cannot be used without generating a corresponding DPoP proof signed by the private key.
@@ -139,6 +140,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
    - All outbound network calls to PDS or authorization servers strictly pass through `validate_outbound_url` and `is_restricted_ip`, preventing loopback (`127.0.0.1`), private RFC 1918 egress, and cloud metadata (`169.254.169.254`) exfiltration.
 5. **Timing Side-Channels**:
    - Signature checks and token verifications utilize constant-time slice comparison (`constant_time_eq`).
+
+### 5.1 Kani Formal Verification Proof Invariants (`tests/kani_harnesses.rs`)
+We leverage [Amazon's Kani Rust Model Checker](https://model-checking.github.io/kani/) to mathematically prove functional invariants at compile time:
+- **Proof 1: Single-Use State Consumption Guarantee**: Prove that for all symbolic keys $K$, after calling `take(K)`, any subsequent `take(K)` or `get(K)` strictly returns `None`.
+- **Proof 2: PKCE S256 Mathematical Correctness**: Prove that `verify_pkce(verifier, challenge)` returns `true` if and only if `challenge == base64url(sha256(verifier))` with zero false-positive verifications across arbitrary symbolic strings.
+- **Proof 3: Timestamp Arithmetic Overflow Freedom**: Prove that monotonic time calculations (`created_at + ttl`) cannot overflow or wrap on 32-bit/64-bit architectures.
+- **Proof 4: JWK Coordinate Encoding Integrity**: Prove that elliptic curve point extraction and base64url coordinate serialization never produce truncated or out-of-bounds byte sequences.
 
 ---
 
@@ -156,7 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [ ] **Milestone 4: Storage & Web Framework Integrations**
   - Implement 64-shard `OAuthStateStore` with TTL pruning.
   - Provide Axum, Actix, and Tower middleware/handlers examples.
-- [ ] **Milestone 5: Documentation, Benchmarks & Crates.io Publication**
+- [ ] **Milestone 5: Kani Formal Verification Suite**
+  - Implement `tests/kani_harnesses.rs` verifying single-use state consumption, PKCE challenge mapping, and arithmetic safety.
+  - Integrate `cargo kani` into continuous integration verification pipeline.
+- [ ] **Milestone 6: Documentation, Benchmarks & Crates.io Publication**
   - 100% rustdoc documentation coverage.
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
   - Publish `v0.1.0` to crates.io and GitHub.
@@ -165,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 7. Success Metrics & Performance SLAs
 
-- **Safety**: 100% `#![forbid(unsafe_code)]` and zero production panics.
+- **Safety & Verification**: 100% `#![forbid(unsafe_code)]`, zero production panics, and 100% passing Kani model checking proofs (`cargo kani`).
 - **Latency**:
   - DPoP proof generation: $< 250\,\mu\text{s}$ (p99).
   - PKCE S256 computation: $< 50\,\mu\text{s}$ (p99).
