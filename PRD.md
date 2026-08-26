@@ -141,12 +141,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 5. **Timing Side-Channels**:
    - Signature checks and token verifications utilize constant-time slice comparison (`constant_time_eq`).
 
-### 5.1 Kani Formal Verification Proof Invariants (`tests/kani_harnesses.rs`)
-We leverage [Amazon's Kani Rust Model Checker](https://model-checking.github.io/kani/) to mathematically prove functional invariants at compile time:
-- **Proof 1: Single-Use State Consumption Guarantee**: Prove that for all symbolic keys $K$, after calling `take(K)`, any subsequent `take(K)` or `get(K)` strictly returns `None`.
-- **Proof 2: PKCE S256 Mathematical Correctness**: Prove that `verify_pkce(verifier, challenge)` returns `true` if and only if `challenge == base64url(sha256(verifier))` with zero false-positive verifications across arbitrary symbolic strings.
-- **Proof 3: Timestamp Arithmetic Overflow Freedom**: Prove that monotonic time calculations (`created_at + ttl`) cannot overflow or wrap on 32-bit/64-bit architectures.
-- **Proof 4: JWK Coordinate Encoding Integrity**: Prove that elliptic curve point extraction and base64url coordinate serialization never produce truncated or out-of-bounds byte sequences.
+### 5.1 Formal Verification & Mathematical Invariants: Verus & Kani
+
+To provide mathematical certainty of security invariants without falling into LLM verification traps, we employ a two-layer formal verification architecture:
+
+#### Layer 1 (Primary): Verus Deductive Verification (`verus!`)
+We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research / CMU / VMware) to enforce **contract-driven code generation**:
+- **Why Verus**: Unlike model checking harnesses where an LLM can inadvertently write contradictory assumptions (`assume(false)`), Verus checks Hoare-logic contracts (`requires`, `ensures`, `invariant`, `decreases`) **directly on the function body**. This eliminates vacuous proofs and forces the LLM to write structurally superior, defensively branched, and mathematically sound code.
+- **Contract 1: Single-Use State Consumption**:
+  ```rust
+  // Proves that taking an active session key strictly removes it from the domain and returns Some(session),
+  // while any repeated attempt or absent key returns None and leaves store state invariant.
+  pub fn take(&mut self, key: Seq<u8>) -> (res: Option<OAuthSessionState>)
+      requires old(self).store.dom().finite(),
+      ensures
+          old(self).store.contains_key(key) ==> (
+              res == Some(old(self).store[key]) &&
+              !self.store.contains_key(key)
+          ),
+          !old(self).store.contains_key(key) ==> (
+              res == None &&
+              self.store =~= old(self).store
+          );
+  ```
+- **Contract 2: PKCE S256 Mathematical Bijection**:
+  Prove that `verify_pkce(verifier, challenge)` returns `true` if and only if `challenge == base64url_unpadded(sha256(verifier))` with zero false-positive verifications across arbitrary symbolic strings.
+- **Contract 3: Timestamp & Monotonic Arithmetic Safety**:
+  Prove that monotonic time calculations (`created_at + ttl_secs`) cannot overflow on 32-bit or 64-bit platforms and that expired sessions strictly evaluate to invalid.
+- **Contract 4: SSRF Restricted IP Rejection Invariant**:
+  Prove that `is_restricted_ip(ip)` returns `true` for all loopback (`127.0.0.0/8`, `::1`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and carrier-grade NAT ranges.
+
+#### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`tests/kani_harnesses.rs`)
+For bit-level transformations and low-level byte packing:
+- All Kani harnesses (`#[kani::proof]`) **must enforce anti-vacuity**:
+  1. Mandatory `kani::cover!()` reachability statements ensuring execution paths are actually exercised.
+  2. Proof validation via `cargo mutants` to prove that synthetic bug injection causes harnesses to fail.
 
 ---
 
@@ -164,9 +193,10 @@ We leverage [Amazon's Kani Rust Model Checker](https://model-checking.github.io/
 - [ ] **Milestone 4: Storage & Web Framework Integrations**
   - Implement 64-shard `OAuthStateStore` with TTL pruning.
   - Provide Axum, Actix, and Tower middleware/handlers examples.
-- [ ] **Milestone 5: Kani Formal Verification Suite**
-  - Implement `tests/kani_harnesses.rs` verifying single-use state consumption, PKCE challenge mapping, and arithmetic safety.
-  - Integrate `cargo kani` into continuous integration verification pipeline.
+- [ ] **Milestone 5: Verus & Kani Formal Verification Suite**
+  - Implement Verus specifications for `OAuthStateStore`, PKCE `S256` verification, and SSRF boundary filters.
+  - Implement `tests/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
+  - Integrate formal verification checks into continuous integration pipeline.
 - [ ] **Milestone 6: Documentation, Benchmarks & Crates.io Publication**
   - 100% rustdoc documentation coverage.
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
@@ -176,7 +206,7 @@ We leverage [Amazon's Kani Rust Model Checker](https://model-checking.github.io/
 
 ## 7. Success Metrics & Performance SLAs
 
-- **Safety & Verification**: 100% `#![forbid(unsafe_code)]`, zero production panics, and 100% passing Kani model checking proofs (`cargo kani`).
+- **Safety & Verification**: 100% `#![forbid(unsafe_code)]`, zero production panics, 100% passing Verus deductive contracts, and 100% passing Kani reachability proofs (`kani::cover`).
 - **Latency**:
   - DPoP proof generation: $< 250\,\mu\text{s}$ (p99).
   - PKCE S256 computation: $< 50\,\mu\text{s}$ (p99).
