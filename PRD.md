@@ -17,28 +17,34 @@ The **AT Protocol (ATProto)** — the decentralized networking foundation behind
 ### 1.2 The Ecosystem Problem
 Currently, virtually all production-grade ATProto OAuth tooling is maintained in TypeScript (`@atproto/oauth-client-node`, `@atproto/oauth-client-browser`). The Rust ecosystem for ATProto (such as `atrium`) focuses primarily on XRPC Lexicon schema compilation and legacy App Password authentication. 
 
-Rust developers building high-performance ATProto services (feed generators, firehose indexers, labeling engines, CLI tools, and web dashboards) lack a standalone, modular, and memory-safe OAuth 2.1 client library that handles the intricate DPoP, PAR, and decentralized identity discovery flows out of the box.
+Rust developers building high-performance ATProto services (feed generators, firehose indexers, labeling engines, CLI tools, and web dashboards) lack a standalone, modular, and memory-safe OAuth 2.1 client library that handles the intricate DPoP, PAR, and decentralized identity discovery flows out of the box. Furthermore, upstream protocol schema changes often cause silent breaking bugs unless continuously validated against official schemas.
 
 ### 1.3 The Solution
-`atproto-oauth-rs` is a high-performance, `#![forbid(unsafe_code)]` pure Rust library that provides a comprehensive, turn-key implementation of AT Protocol OAuth 2.1 with full DPoP and PAR support.
+`atproto-oauth-rs` is a high-performance, `#![forbid(unsafe_code)]` pure Rust library that provides a comprehensive, turn-key implementation of AT Protocol OAuth 2.1 with full DPoP and PAR support. It incorporates **mathematical formal verification (Verus & Kani)** for security invariants and **dynamic schema validation with automated upstream drift detection** to guarantee 100% protocol alignment over time.
 
 ---
 
 ## 2. Core Vision & Design Principles
 
 1. **Uncompromising Safety (`#![forbid(unsafe_code)]`)**:
-   - Zero unsafe blocks in the entire crate root and modules.
+   - Zero unsafe blocks in the entire crate root and all modules.
    - Built on proven, formally verified, pure-Rust cryptographic primitives (`p256`, `sha2`, `hmac`).
 2. **Zero-Panic & Strongly Typed Errors**:
    - Deny `.unwrap()`, `.expect()`, `panic!`, `todo!`, and `unimplemented!` in production paths.
    - All fallible operations return strongly typed `Result<T, AtprotoOAuthError>`.
-3. **Spec-Compliant & Turnkey**:
+3. **Formal Mathematical Verification**:
+   - Security-critical state machines, constant-time comparisons, and token lifecycles are formally proven using **Verus** (deductive verification) and **Kani** (bounded model checking with mandatory anti-vacuity gates).
+4. **Dynamic Schema Invariants & Upstream Drift Protection**:
+   - Bundles official ATProto Lexicons and RFC JSON schemas.
+   - Tests dynamically parse schema ASTs to eliminate mirror-testing blindspots.
+   - Continuous CI synchronization automatically fails builds on upstream schema drift.
+5. **Spec-Compliant & Turnkey**:
    - Complete implementation of ATProto OAuth specifications, RFC 9449, RFC 9126, RFC 7636, RFC 8414, and RFC 9728.
    - Automatic `DPoP-Nonce` replay-retry negotiation (RFC 9449 § 4.3).
-4. **Framework & Runtime Agnostic**:
+6. **Framework & Runtime Agnostic**:
    - Compatible with `tokio`, `axum`, `actix-web`, `tower`, and lightweight CLI tools.
    - Pluggable storage traits for session states (in-memory sharded, Redis, SQL, file-backed).
-5. **High Concurrency & Low Latency**:
+7. **High Concurrency & Low Latency**:
    - Sharded lock-free state stores with single-use atomic consumption for replay defense.
    - Sub-millisecond cryptographic proof generation and token verification.
 
@@ -59,6 +65,8 @@ Rust developers building high-performance ATProto services (feed generators, fir
 | **Session Management** | RFC 2104 / JWT | Pure safe Rust HMAC-SHA256 session token generation, constant-time verification (`constant_time_eq`), and expiration enforcement. |
 | **State Storage** | Sharded Concurrency | 64-shard partitioned, TTL-bounded, atomic single-use state store for CSRF and replay defense. |
 | **SSRF & Egress Protection** | Security Standard | Strict private IP filtering (RFC 1918, loopback, link-local, cloud metadata `169.254.169.254`) and no-redirect HTTP client enforcement. |
+| **Dynamic Schema Engine** | ATProto / IETF | Runtime validation of egress payloads and ingress responses against official Lexicon & RFC JSON schemas. |
+| **Upstream Drift Guard** | Continuous CI | Automated upstream schema synchronization and diff assertion preventing silent protocol breakage. |
 
 ---
 
@@ -79,12 +87,24 @@ atproto-oauth/
 │   ├── security.rs         # SSRF validation, restricted IP filtering, constant_time_eq
 │   ├── types.rs            # Strongly-typed request, response, and metadata models
 │   └── error.rs            # Strongly-typed AtprotoOAuthError enum
+├── lexicons/               # Bundled official ATProto Lexicon schemas
+│   └── com/atproto/
+│       ├── identity/resolveHandle.json
+│       └── server/createSession.json
+├── schemas/                # Bundled official IETF RFC OAuth schemas
+│   ├── rfc8414_authorization_server.json
+│   ├── rfc9728_protected_resource.json
+│   └── atproto_client_metadata.json
+├── scripts/
+│   └── sync_specs.sh       # Automated upstream spec synchronization & drift verification
 ├── tests/
 │   ├── dpop_rfc9449_vectors.rs
 │   ├── pkce_rfc7636_vectors.rs
 │   ├── discovery_tests.rs
 │   ├── token_exchange_tests.rs
-│   ├── kani_harnesses.rs       # Formal mathematical proofs via cargo-kani
+│   ├── schema_compliance_tests.rs # Dynamic runtime schema AST validation
+│   ├── kani_harnesses.rs          # Bounded model checking with anti-vacuity checks
+│   ├── verus_proofs.rs            # Deductive verification contracts
 │   └── adversarial_hardening_tests.rs
 ├── Cargo.toml
 ├── LICENSE-MIT
@@ -141,9 +161,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 5. **Timing Side-Channels**:
    - Signature checks and token verifications utilize constant-time slice comparison (`constant_time_eq`).
 
+---
+
 ### 5.1 Formal Verification & Mathematical Invariants: Verus & Kani
 
-To provide mathematical certainty of security invariants without falling into LLM verification traps, we employ a two-layer formal verification architecture:
+To provide mathematical certainty of security invariants without falling into LLM verification traps, we employ a multi-layered formal verification hierarchy:
+
+```mermaid
+graph TD
+    A[Unit & Edge Tests - cargo test] --> B[Property Testing - proptest]
+    B --> C[Mutation Testing - cargo mutants]
+    C --> D[Deductive Verification - Verus]
+    C --> E[Bounded Model Checking - Kani with Cover Anti-Vacuity]
+```
 
 #### Layer 1 (Primary): Verus Deductive Verification (`verus!`)
 We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research / CMU / VMware) to enforce **contract-driven code generation**:
@@ -173,9 +203,25 @@ We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research
 
 #### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`tests/kani_harnesses.rs`)
 For bit-level transformations and low-level byte packing:
-- All Kani harnesses (`#[kani::proof]`) **must enforce anti-vacuity**:
+- All Kani harnesses (`#[kani::proof]`) **must enforce strict anti-vacuity**:
   1. Mandatory `kani::cover!()` reachability statements ensuring execution paths are actually exercised.
   2. Proof validation via `cargo mutants` to prove that synthetic bug injection causes harnesses to fail.
+
+---
+
+### 5.2 Dynamic Schema Invariants & Upstream Drift Detection
+
+To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelCase` vs `snake_case` in Lexicons vs OAuth RFCs):
+
+1. **Embedded Canonical Specifications**:
+   - The crate bundles official JSON schemas in `lexicons/` and `schemas/`.
+2. **Runtime AST-Level Invariant Tests (`tests/schema_compliance_tests.rs`)**:
+   - Dynamically loads schema ASTs using `include_str!` and validates raw `serde_json::Value` payloads.
+   - Asserts that all generated client metadata, PAR requests, DPoP JWT headers, and token requests strictly conform to required properties and field name casings.
+   - Eliminates mirror-testing blindspots where serializers and deserializers share identical bugs.
+3. **Automated Continuous Upstream Drift Detection (`scripts/sync_specs.sh`)**:
+   - Runs in CI on every PR, fetching official Lexicons and RFC schemas from `bluesky-social/atproto` and IETF.
+   - Fails CI immediately upon detecting schema drift, preventing unannounced upstream changes from breaking consumers.
 
 ---
 
@@ -193,12 +239,16 @@ For bit-level transformations and low-level byte packing:
 - [ ] **Milestone 4: Storage & Web Framework Integrations**
   - Implement 64-shard `OAuthStateStore` with TTL pruning.
   - Provide Axum, Actix, and Tower middleware/handlers examples.
-- [ ] **Milestone 5: Verus & Kani Formal Verification Suite**
+- [ ] **Milestone 5: Dynamic Schema Compliance & Upstream Drift CI**
+  - Bundle official Lexicon and RFC schemas in `lexicons/` and `schemas/`.
+  - Implement `tests/schema_compliance_tests.rs` with runtime AST validation.
+  - Add `scripts/sync_specs.sh` and CI schema drift verification.
+- [ ] **Milestone 6: Verus & Kani Formal Verification Suite**
   - Implement Verus specifications for `OAuthStateStore`, PKCE `S256` verification, and SSRF boundary filters.
   - Implement `tests/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
   - Integrate formal verification checks into continuous integration pipeline.
-- [ ] **Milestone 6: Documentation, Benchmarks & Crates.io Publication**
-  - 100% rustdoc documentation coverage.
+- [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication**
+  - 100% rustdoc documentation coverage (`missing_docs` denied).
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
   - Publish `v0.1.0` to crates.io and GitHub.
 
@@ -207,8 +257,9 @@ For bit-level transformations and low-level byte packing:
 ## 7. Success Metrics & Performance SLAs
 
 - **Safety & Verification**: 100% `#![forbid(unsafe_code)]`, zero production panics, 100% passing Verus deductive contracts, and 100% passing Kani reachability proofs (`kani::cover`).
+- **Schema Conformity**: 100% pass rate on dynamic AST Lexicon & RFC schema validation tests with 0 schema drift in CI.
 - **Latency**:
   - DPoP proof generation: $< 250\,\mu\text{s}$ (p99).
   - PKCE S256 computation: $< 50\,\mu\text{s}$ (p99).
   - Memory footprint: $< 5\,\text{MB}$ under 50,000 active concurrent OAuth sessions.
-- **Test Coverage**: $> 90\%$ code coverage across unit, integration, and fuzz test suites.
+- **Test Coverage**: $> 90\%$ code coverage across unit, integration, proptest, and mutation test suites.
