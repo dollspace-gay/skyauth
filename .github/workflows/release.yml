@@ -45,7 +45,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           echo "Publishing ${{ steps.pkg_info.outputs.name }} v${{ steps.pkg_info.outputs.version }} to crates.io..."
-          cargo publish --token "${CARGO_REGISTRY_TOKEN}"
+          cargo publish --allow-dirty --token "${CARGO_REGISTRY_TOKEN}"
 
       - name: Create or Update GitHub Release Tag
         if: steps.check_published.outputs.published == 'false'
