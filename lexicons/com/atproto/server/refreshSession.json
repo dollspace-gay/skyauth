@@ -1,0 +1,60 @@
+{
+  "lexicon": 1,
+  "id": "com.atproto.server.refreshSession",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Refresh an authentication session. Requires auth using the 'refreshJwt' token.",
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "accessJwt",
+            "refreshJwt",
+            "handle",
+            "did"
+          ],
+          "properties": {
+            "accessJwt": {
+              "type": "string",
+              "description": "Access JWT token."
+            },
+            "refreshJwt": {
+              "type": "string",
+              "description": "Refresh JWT token."
+            },
+            "handle": {
+              "type": "string",
+              "format": "handle",
+              "description": "User handle."
+            },
+            "did": {
+              "type": "string",
+              "format": "did",
+              "description": "User DID."
+            },
+            "didDoc": {
+              "type": "unknown",
+              "description": "Optional DID document."
+            },
+            "active": {
+              "type": "boolean",
+              "description": "Whether the account is active."
+            },
+            "status": {
+              "type": "string",
+              "description": "Account status string."
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AccountTakedown",
+          "description": "Account has been taken down."
+        }
+      ]
+    }
+  }
+}

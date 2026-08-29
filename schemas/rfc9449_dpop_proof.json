@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RFC 9449 DPoP Proof Claims",
+  "description": "JSON Schema for RFC 9449 Demonstrating Proof of Possession (DPoP) JWT payload claims.",
+  "type": "object",
+  "required": [
+    "jti",
+    "htm",
+    "htu",
+    "iat"
+  ],
+  "properties": {
+    "jti": {
+      "type": "string",
+      "description": "Unique identifier for the DPoP proof JWT to prevent replay attacks."
+    },
+    "htm": {
+      "type": "string",
+      "description": "The HTTP method of the request to which the proof is attached."
+    },
+    "htu": {
+      "type": "string",
+      "format": "uri",
+      "description": "The HTTP URI to which the request is made without query and fragment."
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Creation timestamp in seconds since Unix epoch."
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expiration timestamp in seconds since Unix epoch."
+    },
+    "nonce": {
+      "type": "string",
+      "description": "Server-provided challenge nonce."
+    },
+    "ath": {
+      "type": "string",
+      "description": "Hash of the access token (Base64url-encoded SHA-256)."
+    }
+  },
+  "additionalProperties": true
+}

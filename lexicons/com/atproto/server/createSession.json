@@ -1,0 +1,104 @@
+{
+  "lexicon": 1,
+  "id": "com.atproto.server.createSession",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Create an authentication session.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "identifier",
+            "password"
+          ],
+          "properties": {
+            "identifier": {
+              "type": "string",
+              "description": "Handle or other identifier supported by the server for the authenticating user."
+            },
+            "password": {
+              "type": "string",
+              "description": "Password or authentication token."
+            },
+            "authFactorToken": {
+              "type": "string",
+              "description": "2FA auth token."
+            },
+            "allowTakendown": {
+              "type": "boolean",
+              "description": "When true, response will not include account takedown status."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "accessJwt",
+            "refreshJwt",
+            "handle",
+            "did"
+          ],
+          "properties": {
+            "accessJwt": {
+              "type": "string",
+              "description": "Access JWT token."
+            },
+            "refreshJwt": {
+              "type": "string",
+              "description": "Refresh JWT token."
+            },
+            "handle": {
+              "type": "string",
+              "format": "handle",
+              "description": "User handle."
+            },
+            "did": {
+              "type": "string",
+              "format": "did",
+              "description": "User DID."
+            },
+            "didDoc": {
+              "type": "unknown",
+              "description": "Optional DID document."
+            },
+            "email": {
+              "type": "string",
+              "description": "User email address."
+            },
+            "emailConfirmed": {
+              "type": "boolean",
+              "description": "Whether the user email is confirmed."
+            },
+            "emailAuthFactor": {
+              "type": "boolean",
+              "description": "Whether 2FA email authentication is enabled."
+            },
+            "active": {
+              "type": "boolean",
+              "description": "Whether the account is active."
+            },
+            "status": {
+              "type": "string",
+              "description": "Account status string."
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AccountTakedown",
+          "description": "Account has been taken down."
+        },
+        {
+          "name": "AuthFactorTokenRequired",
+          "description": "Two-factor authentication code required."
+        }
+      ]
+    }
+  }
+}

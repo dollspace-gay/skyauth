@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RFC 8414 OAuth 2.0 Authorization Server Metadata",
+  "description": "JSON Schema for RFC 8414 OAuth 2.0 Authorization Server Metadata, including RFC 9126 PAR and RFC 9449 DPoP extensions.",
+  "type": "object",
+  "required": [
+    "issuer",
+    "authorization_endpoint",
+    "token_endpoint"
+  ],
+  "properties": {
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "description": "The authorization server's issuer identifier URL."
+    },
+    "authorization_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's authorization endpoint."
+    },
+    "token_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's token endpoint."
+    },
+    "pushed_authorization_request_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's pushed authorization request (PAR) endpoint."
+    },
+    "require_pushed_authorization_requests": {
+      "type": "boolean",
+      "description": "Indicates whether the authorization server requires PAR for authorization requests."
+    },
+    "dpop_signing_alg_values_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of the DPoP signing algorithms supported by the authorization server."
+    },
+    "code_challenge_methods_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of PKCE code challenge methods supported by the authorization server."
+    },
+    "response_types_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of OAuth 2.0 response_type values supported."
+    },
+    "response_modes_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of OAuth 2.0 response_mode values supported."
+    },
+    "grant_types_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of OAuth 2.0 grant_type values supported."
+    },
+    "token_endpoint_auth_methods_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of client authentication methods supported by the token endpoint."
+    },
+    "token_endpoint_auth_signing_alg_values_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of signing algorithms supported for client authentication."
+    },
+    "scopes_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of OAuth 2.0 scope values supported."
+    },
+    "authorization_response_iss_parameter_supported": {
+      "type": "boolean",
+      "description": "Indicates whether the authorization response includes the iss parameter."
+    },
+    "jwks_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's JSON Web Key Set document."
+    },
+    "registration_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's dynamic client registration endpoint."
+    },
+    "revocation_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's token revocation endpoint."
+    },
+    "revocation_endpoint_auth_methods_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of client authentication methods supported by the revocation endpoint."
+    },
+    "introspection_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's token introspection endpoint."
+    },
+    "introspection_endpoint_auth_methods_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of client authentication methods supported by the introspection endpoint."
+    },
+    "service_documentation": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the authorization server's documentation."
+    },
+    "client_id_metadata_document_supported": {
+      "type": "boolean",
+      "description": "Indicates whether the authorization server supports client ID metadata documents."
+    }
+  },
+  "additionalProperties": true
+}

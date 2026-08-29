@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RFC 9728 OAuth 2.0 Protected Resource Metadata",
+  "description": "JSON Schema for RFC 9728 OAuth 2.0 Protected Resource Metadata used for PDS discovery.",
+  "type": "object",
+  "required": [
+    "resource",
+    "authorization_servers"
+  ],
+  "properties": {
+    "resource": {
+      "type": "string",
+      "format": "uri",
+      "description": "The protected resource's identifier URL (e.g. PDS origin)."
+    },
+    "authorization_servers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      },
+      "minItems": 1,
+      "description": "List of trusted Authorization Server URLs protecting this resource."
+    },
+    "scopes_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of OAuth 2.0 scopes supported by this protected resource."
+    },
+    "bearer_methods_supported": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of bearer token presentation methods supported."
+    },
+    "resource_documentation": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the protected resource documentation."
+    }
+  },
+  "additionalProperties": true
+}
