@@ -172,6 +172,41 @@ impl DPoPKey {
             .map_err(|e| CryptoError::Pem(format!("Failed to export PKCS#8 PEM: {e}")))
     }
 
+    /// Exports the private key scalar as a raw 32-byte array.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&self.signing_key.to_bytes());
+        out
+    }
+
+    /// Exports the private key as an unpadded Base64URL string.
+    #[must_use]
+    pub fn to_bytes_b64(&self) -> String {
+        base64url_encode(&self.signing_key.to_bytes())
+    }
+
+    /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::InvalidKey`] if the bytes cannot be parsed into a valid P-256 scalar.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, CryptoError> {
+        let signing_key = SigningKey::from_slice(bytes)
+            .map_err(|e| CryptoError::InvalidKey(format!("Invalid P-256 scalar bytes: {e}")))?;
+        Ok(Self { signing_key })
+    }
+
+    /// Imports an ECDSA P-256 private key from a Base64URL-encoded scalar string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError`] if decoding or key parsing fails.
+    pub fn from_bytes_b64(b64: &str) -> Result<Self, CryptoError> {
+        let bytes = base64url_decode(b64)?;
+        Self::from_slice(&bytes)
+    }
+
     /// Derives the public [`JwkEc`] representation corresponding to this keypair.
     #[must_use]
     pub fn public_jwk(&self) -> JwkEc {

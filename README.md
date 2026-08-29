@@ -1,23 +1,138 @@
 # 🔐 `atproto-oauth-rs`
 
-> **Pure Safe Rust (`#![forbid(unsafe_code)]`) AT Protocol OAuth 2.1 Client with RFC 9449 DPoP, RFC 9126 PAR, & RFC 7636 PKCE**
+[![crates.io](https://img.shields.io/crates/v/atproto-oauth.svg)](https://crates.io/crates/atproto-oauth)
+[![docs.rs](https://docs.rs/atproto-oauth/badge.svg)](https://docs.rs/atproto-oauth)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Safety Guard](https://img.shields.io/badge/unsafe-forbidden-success.svg)](src/lib.rs)
+
+> **Pure Safe Rust (`#![forbid(unsafe_code)]`), Zero-Panic AT Protocol OAuth 2.1 Client with RFC 9449 DPoP, RFC 9126 PAR, RFC 7636 PKCE, & Formal Mathematical Verification**
 
 ---
 
 ## 🌟 Highlights
 
-- **100% Pure Safe Rust**: `#![forbid(unsafe_code)]` enforced across the entire codebase with zero `unsafe` blocks.
-- **RFC 9449 DPoP**: Ephemeral ECDSA P-256 key generation, RFC 7517 JWK formatting, signed `dpop+jwt` proof tokens, and automatic `DPoP-Nonce` retry negotiation.
-- **RFC 9126 PAR**: Pushed Authorization Requests with signed DPoP headers.
-- **RFC 7636 PKCE**: S256 verifier/challenge generation and verification.
-- **Decentralized Identity Discovery**: Seamless handle resolution (`alice.bsky.social`), `did:plc`, `did:web`, RFC 9728 protected resource discovery, and RFC 8414 OAuth authorization server discovery.
-- **Replay & SSRF Defense**: 64-shard partitioned single-use state store and strict private network egress filtering.
+- **100% Pure Safe Rust**: `#![forbid(unsafe_code)]` enforced crate-wide with 0 `unsafe` blocks and zero production panics.
+- **RFC 9449 DPoP**: Ephemeral ECDSA P-256 key generation, RFC 7517 JWK formatting, RFC 7638 JWK Thumbprints (`jkt`), signed `dpop+jwt` proof tokens, access token hash (`ath`), and transparent auto-nonce retry negotiation.
+- **RFC 9126 PAR (Pushed Authorization Requests)**: Direct back-channel pushing of authorization parameters with signed DPoP headers.
+- **RFC 7636 PKCE**: High-entropy 43-character Base64URL verifier generation, SHA-256 S256 challenge derivation, and constant-time verification.
+- **Decentralized Identity Discovery**: Handle normalization, DNS TXT resolution (`_atproto.<handle>`), HTTPS fallback (`/.well-known/atproto-did`), DID resolution (`did:plc`, `did:web`), and bidirectional `alsoKnownAs` verification.
+- **RFC 8414 & RFC 9728 Discovery**: Protected Resource Metadata and Authorization Server Metadata discovery with automatic OIDC fallback.
+- **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
+- **64-Shard Partitioned State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
+- **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
+- **Formal Mathematical Verification**: Verified using **Verus** (deductive contracts) and **Kani** (bounded model checking with 36 mandatory anti-vacuity reachability checks).
+- **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
 
 ---
 
-## 📖 Product Requirements Document (PRD)
+## 🚀 Quick Start
 
-For full architectural blueprints, API designs, security specifications, and milestone roadmaps, see [**`PRD.md`**](PRD.md).
+Add `atproto-oauth` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+atproto-oauth = "0.1"
+```
+
+### 1. DPoP Proof Generation & Verification
+
+```rust
+use atproto_oauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
+use atproto_oauth::pkce::PkcePair;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Generate PKCE code challenge
+    let pkce = PkcePair::generate();
+    assert_eq!(pkce.verifier.len(), 43);
+
+    // 2. Generate ephemeral DPoP keypair
+    let dpop_key = DPoPKey::generate();
+    let jkt = dpop_key.jwk_thumbprint();
+
+    // 3. Create a DPoP proof for a token request
+    let proof = dpop_key.create_proof(
+        "POST",
+        "https://pds.example.com/oauth/token",
+        None,
+        None,
+    )?;
+
+    // 4. Verify inbound DPoP proof
+    let verifier = DPoPVerifier::new();
+    let (claims, jwk) = verifier.verify_proof(
+        &proof,
+        "POST",
+        "https://pds.example.com/oauth/token",
+        None,
+        None,
+        None,
+    )?;
+    assert_eq!(claims.htm, "POST");
+
+    Ok(())
+}
+```
+
+### 2. Full OAuth Client Lifecycle
+
+```rust
+use atproto_oauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
+use atproto_oauth::store::OAuthStateStore;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = OAuthClientMetadata {
+        client_id: "https://my-app.example.com/client-metadata.json".to_string(),
+        client_name: Some("My ATProto App".to_string()),
+        client_uri: Some("https://my-app.example.com".to_string()),
+        redirect_uris: vec!["https://my-app.example.com/oauth/callback".to_string()],
+        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+        response_types: vec!["code".to_string()],
+        scope: "atproto transition:generic".to_string(),
+        token_endpoint_auth_method: "none".to_string(),
+        dpop_bound_access_tokens: true,
+        jwks_uri: None,
+    };
+
+    let state_store = Arc::new(OAuthStateStore::new());
+    let client = AtprotoOAuthClient::builder()
+        .metadata(metadata)
+        .state_store(state_store)
+        .build()?;
+
+    // Initiate login with handle or DID
+    let auth_req = client.authorize("alice.bsky.social").await?;
+    println!("Redirect user to: {}", auth_req.authorization_url);
+
+    Ok(())
+}
+```
+
+---
+
+## 🛡️ Formal Verification & Mathematical Invariants
+
+`atproto-oauth-rs` incorporates a multi-layered formal verification hierarchy to eliminate security vulnerabilities:
+
+1. **Verus Deductive Contracts (`verus!`)**: Mathematical proofs for session state transitions, constant-time comparisons, and PKCE deterministic bounds.
+2. **Kani Bounded Model Checking (`kani::proof`)**: 5 exhaustive verification harnesses checking all symbolic byte inputs.
+3. **Anti-Vacuity Coverage (`kani::cover!`)**: 36 mandatory reachability checks ensuring harnesses actually exercise functional code paths.
+
+---
+
+## 🧪 Running Tests & Formal Proofs
+
+```bash
+# Run unit, integration, and RFC vector test suites (730+ tests)
+cargo test --all-targets --all-features
+
+# Verify strict clippy compliance (0 warnings)
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Verify specification drift against official ATProto Lexicons & RFC schemas
+bash scripts/sync_specs.sh --verify
+```
 
 ---
 
