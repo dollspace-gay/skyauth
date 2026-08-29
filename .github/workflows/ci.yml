@@ -145,6 +145,8 @@ jobs:
         run: |
           echo "Publishing ${{ steps.pkg_info.outputs.name }} v${{ steps.pkg_info.outputs.version }} to crates.io..."
           cargo publish --allow-dirty --token "${CARGO_REGISTRY_TOKEN}"
+          # Decommission legacy package name on crates.io
+          cargo yank --version 0.1.0 atproto-oauth-rs --token "${CARGO_REGISTRY_TOKEN}" || true
 
       - name: Create or Update GitHub Release Tag
         if: steps.check_published.outputs.published == 'false'
