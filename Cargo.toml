@@ -1,5 +1,5 @@
 [package]
-name = "atproto-oauth"
+name = "atproto-oauth-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mike <mike@example.com>"]
@@ -7,10 +7,14 @@ description = "Pure-Rust OAuth 2.1, DPoP (RFC 9449), and PAR (RFC 9126) client l
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mike10010100/atproto-oauth-rs"
 homepage = "https://github.com/mike10010100/atproto-oauth-rs"
-documentation = "https://docs.rs/atproto-oauth"
+documentation = "https://docs.rs/atproto-oauth-rs"
 keywords = ["atproto", "bluesky", "oauth", "dpop", "pkce"]
 categories = ["authentication", "cryptography", "web-programming"]
 readme = "README.md"
+
+[lib]
+name = "atproto_oauth"
+path = "src/lib.rs"
 
 [dependencies]
 # Cryptographic Primitives (Pure Safe Rust)
