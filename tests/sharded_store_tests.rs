@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, SystemTime};
 
-use atproto_oauth::client::StoredStateEntry;
-use atproto_oauth::dpop::DPoPKey;
-use atproto_oauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
+use skyauth::client::StoredStateEntry;
+use skyauth::dpop::DPoPKey;
+use skyauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 use tokio_util::sync::CancellationToken;
 
 fn create_test_state(state: &str, ttl_secs: u64) -> StoredStateEntry {

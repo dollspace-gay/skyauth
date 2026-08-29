@@ -21,12 +21,12 @@ use proptest::prelude::*;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-use atproto_oauth::client::TokenResponse;
-use atproto_oauth::discovery::{AuthorizationServerMetadata, ProtectedResourceMetadata};
-use atproto_oauth::dpop::{DPoPProofClaims, JwkEc};
-use atproto_oauth::identity::{DidDocument, DidService, VerificationMethod};
-use atproto_oauth::par::{ParParameters, ParResponse};
-use atproto_oauth::pkce::{PkceMethod, PkcePair};
+use skyauth::client::TokenResponse;
+use skyauth::discovery::{AuthorizationServerMetadata, ProtectedResourceMetadata};
+use skyauth::dpop::{DPoPProofClaims, JwkEc};
+use skyauth::identity::{DidDocument, DidService, VerificationMethod};
+use skyauth::par::{ParParameters, ParResponse};
+use skyauth::pkce::{PkceMethod, PkcePair};
 
 // Static bundled schema includes
 const RFC8414_SCHEMA_STR: &str = include_str!("../schemas/rfc8414_authorization_server.json");

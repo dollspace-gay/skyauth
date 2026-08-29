@@ -48,7 +48,7 @@ impl JwkEc {
     /// # Examples
     ///
     /// ```
-    /// use atproto_oauth::dpop::JwkEc;
+    /// use skyauth::dpop::JwkEc;
     ///
     /// let jwk = JwkEc {
     ///     kty: "EC".to_string(),
@@ -124,7 +124,7 @@ impl DPoPKey {
     /// # Examples
     ///
     /// ```
-    /// use atproto_oauth::dpop::DPoPKey;
+    /// use skyauth::dpop::DPoPKey;
     ///
     /// let key = DPoPKey::generate();
     /// let jwk = key.public_jwk();
@@ -581,7 +581,7 @@ impl DPoPVerifier {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::dpop::compute_access_token_hash;
+/// use skyauth::dpop::compute_access_token_hash;
 ///
 /// // RFC 9449 Section 7.1 Test Vector
 /// let token = "Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU";
@@ -647,7 +647,7 @@ pub fn normalize_htu(uri_str: &str) -> Result<String, DPoPError> {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::dpop::extract_dpop_nonce;
+/// use skyauth::dpop::extract_dpop_nonce;
 ///
 /// assert_eq!(extract_dpop_nonce(Some("nonce-xyz")), Some("nonce-xyz".to_string()));
 /// assert_eq!(extract_dpop_nonce(None), None);

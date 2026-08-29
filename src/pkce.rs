@@ -56,7 +56,7 @@ impl PkcePair {
     /// # Examples
     ///
     /// ```
-    /// use atproto_oauth::pkce::PkcePair;
+    /// use skyauth::pkce::PkcePair;
     ///
     /// let pkce = PkcePair::generate();
     /// assert_eq!(pkce.verifier.len(), 43);
@@ -182,7 +182,7 @@ pub fn validate_verifier(verifier: &str) -> Result<(), PkceError> {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::pkce::verify_pkce;
+/// use skyauth::pkce::verify_pkce;
 ///
 /// // RFC 7636 Appendix B Test Vector
 /// let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

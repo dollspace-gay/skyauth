@@ -31,12 +31,12 @@ use tokio_util::sync::CancellationToken;
 use tower_layer::Layer;
 use tower_service::Service;
 
-use atproto_oauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
-use atproto_oauth::crypto::constant_time_eq;
-use atproto_oauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
-use atproto_oauth::error::{IntegrationError, StoreError};
-use atproto_oauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
-use atproto_oauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
+use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
+use skyauth::crypto::constant_time_eq;
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
+use skyauth::error::{IntegrationError, StoreError};
+use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+use skyauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 
 fn mock_stored_state(state: &str, ttl_secs: u64) -> StoredStateEntry {
     StoredStateEntry {
@@ -588,7 +588,7 @@ fn test_challenge_shard_index_deterministic_invariance() {
 #[cfg(feature = "tower")]
 mod tower_stress_tests {
     use super::*;
-    use atproto_oauth::integrations::tower::OAuthAuthLayer;
+    use skyauth::integrations::tower::OAuthAuthLayer;
     use tower::service_fn;
 
     #[tokio::test]
@@ -683,8 +683,8 @@ mod tower_stress_tests {
 #[cfg(feature = "axum")]
 mod axum_adversarial_tests {
     use super::*;
-    use atproto_oauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
     use axum::extract::FromRequestParts;
+    use skyauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
 
     #[tokio::test]
     async fn test_challenge_axum_extractor_missing_fields_and_error_params() {

@@ -201,42 +201,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "atproto-oauth-rs"
-version = "0.1.0"
-dependencies = [
- "actix-web",
- "ahash",
- "axum",
- "base64",
- "hex",
- "hmac",
- "http 1.5.0",
- "http-body-util",
- "jsonschema",
- "p256",
- "parking_lot",
- "proptest",
- "rand 0.8.8",
- "rand_core 0.6.4",
- "reqwest",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2",
- "subtle",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "tower",
- "tower-layer",
- "tower-service",
- "tracing",
- "url",
- "wiremock",
- "zeroize",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2019,6 +1983,42 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "skyauth"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "ahash",
+ "axum",
+ "base64",
+ "hex",
+ "hmac",
+ "http 1.5.0",
+ "http-body-util",
+ "jsonschema",
+ "p256",
+ "parking_lot",
+ "proptest",
+ "rand 0.8.8",
+ "rand_core 0.6.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "url",
+ "wiremock",
+ "zeroize",
 ]
 
 [[package]]

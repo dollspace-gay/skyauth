@@ -37,8 +37,8 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use atproto_oauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
-//! use atproto_oauth::pkce::PkcePair;
+//! use skyauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
+//! use skyauth::pkce::PkcePair;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // 1. Generate PKCE code challenge

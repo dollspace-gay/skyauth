@@ -23,18 +23,16 @@ use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::DecodePrivateKey;
 use proptest::prelude::*;
 
-use atproto_oauth::crypto::{
+use skyauth::crypto::{
     base64url_decode, base64url_encode, jwk_thumbprint_ec_p256, jwk_thumbprint_rsa, sign_p256_raw,
     verify_p256_raw, verifying_key_from_coordinates, verifying_key_to_coordinates,
 };
-use atproto_oauth::dpop::{
-    compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier, JwkEc,
-};
-use atproto_oauth::error::{CryptoError, DPoPError, IdentityError, PkceError};
-use atproto_oauth::identity::{
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier, JwkEc};
+use skyauth::error::{CryptoError, DPoPError, IdentityError, PkceError};
+use skyauth::identity::{
     normalize_handle, validate_did_syntax, DidDocument, DidMethod, DidService, IdentityResolver,
 };
-use atproto_oauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
+use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2676,19 +2674,17 @@ proptest! {
 // 12. CHALLENGER 1 (M7): FINAL ACCEPTANCE & ADVERSARIAL HARDENING SUITE
 // =========================================================================
 
-use atproto_oauth::client::StoredStateEntry;
-use atproto_oauth::discovery::{
+use skyauth::client::StoredStateEntry;
+use skyauth::discovery::{
     fetch_auth_server_metadata, fetch_protected_resource_metadata, AuthorizationServerMetadata,
     ProtectedResourceMetadata,
 };
-use atproto_oauth::error::{AtprotoOAuthError, DiscoveryError, TokenError};
-use atproto_oauth::par::{build_authorization_url, execute_par_request, ParParameters};
-use atproto_oauth::session::OAuthSession;
-use atproto_oauth::ssrf::{
-    is_blocked_hostname, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
-};
-use atproto_oauth::store::{OAuthStateStore, OAuthStore};
-use atproto_oauth::verification::kani_harnesses::{
+use skyauth::error::{AtprotoOAuthError, DiscoveryError, TokenError};
+use skyauth::par::{build_authorization_url, execute_par_request, ParParameters};
+use skyauth::session::OAuthSession;
+use skyauth::ssrf::{is_blocked_hostname, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
+use skyauth::store::{OAuthStateStore, OAuthStore};
+use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection,
@@ -2831,7 +2827,7 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
 
 #[test]
 fn test_m7_adv_dpop_htu_exhaustive_normalization() {
-    use atproto_oauth::dpop::normalize_htu;
+    use skyauth::dpop::normalize_htu;
 
     // 1. Default port removal
     assert_eq!(

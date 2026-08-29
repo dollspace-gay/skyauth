@@ -14,15 +14,15 @@ use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
-use atproto_oauth::discovery::{
+use skyauth::discovery::{
     discover_oauth_endpoints, fetch_auth_server_metadata, validate_auth_server_capabilities,
     AuthorizationServerMetadata,
 };
-use atproto_oauth::error::{DiscoveryError, IdentityError};
-use atproto_oauth::identity::{
+use skyauth::error::{DiscoveryError, IdentityError};
+use skyauth::identity::{
     normalize_handle, DidDocument, DidService, DnsTxtResolver, IdentityResolver,
 };
-use atproto_oauth::ssrf::{is_blocked_hostname, SsrfFilter};
+use skyauth::ssrf::{is_blocked_hostname, SsrfFilter};
 
 #[path = "e2e_harness/mod.rs"]
 mod e2e_harness;

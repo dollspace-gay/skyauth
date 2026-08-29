@@ -1,6 +1,6 @@
 # 📄 Product Requirements Document (PRD)
 
-# `atproto-oauth-rs`
+# `skyauth`
 ### Pure Safe Rust AT Protocol OAuth 2.1, DPoP (RFC 9449), & PAR (RFC 9126) Client Library
 
 ---
@@ -20,7 +20,7 @@ Currently, virtually all production-grade ATProto OAuth tooling is maintained in
 Rust developers building high-performance ATProto services (feed generators, firehose indexers, labeling engines, CLI tools, and web dashboards) lack a standalone, modular, and memory-safe OAuth 2.1 client library that handles the intricate DPoP, PAR, and decentralized identity discovery flows out of the box. Furthermore, upstream protocol schema changes often cause silent breaking bugs unless continuously validated against official schemas.
 
 ### 1.3 The Solution
-`atproto-oauth-rs` is a high-performance, `#![forbid(unsafe_code)]` pure Rust library that provides a comprehensive, turn-key implementation of AT Protocol OAuth 2.1 with full DPoP and PAR support. It incorporates **mathematical formal verification (Verus & Kani)** for security invariants and **dynamic schema validation with automated upstream drift detection** to guarantee 100% protocol alignment over time.
+`skyauth` is a high-performance, `#![forbid(unsafe_code)]` pure Rust library that provides a comprehensive, turn-key implementation of AT Protocol OAuth 2.1 with full DPoP and PAR support. It incorporates **mathematical formal verification (Verus & Kani)** for security invariants and **dynamic schema validation with automated upstream drift detection** to guarantee 100% protocol alignment over time.
 
 ---
 
@@ -115,7 +115,7 @@ atproto-oauth/
 ### 4.2 Core API Signatures (Mockup)
 
 ```rust
-use atproto_oauth::{AtprotoOAuthClient, OAuthClientMetadata, OAuthStateStore};
+use skyauth::{AtprotoOAuthClient, OAuthClientMetadata, OAuthStateStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

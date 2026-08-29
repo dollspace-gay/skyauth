@@ -24,16 +24,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use atproto_oauth::crypto::{
+use skyauth::crypto::{
     base64url_decode, base64url_encode, constant_time_eq, hmac_sha256, jwk_thumbprint_ec_p256,
     sha256_digest, sign_p256_raw, verify_p256_raw,
 };
-use atproto_oauth::dpop::{
+use skyauth::dpop::{
     compute_access_token_hash, extract_dpop_nonce, normalize_htu, DPoPKey, DPoPNonceCache,
     DPoPVerifier, JwkEc,
 };
-use atproto_oauth::error::{DPoPError, PkceError};
-use atproto_oauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
+use skyauth::error::{DPoPError, PkceError};
+use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
 
 // =========================================================================
 // FEATURE 1 (Boundary): Pure-Rust Crypto Primitives (5 Tests)

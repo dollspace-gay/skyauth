@@ -26,18 +26,14 @@ use serde_json::json;
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use atproto_oauth::client::{
-    AtprotoOAuthClient, CallbackParams, OAuthClientMetadata, StoredStateEntry,
-};
-use atproto_oauth::crypto::constant_time_eq;
-use atproto_oauth::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache, DPoPVerifier};
-use atproto_oauth::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
-use atproto_oauth::identity::IdentityResolverBuilder;
-use atproto_oauth::par::{
-    build_authorization_url, execute_par_request, ParParameters, ParResponse,
-};
-use atproto_oauth::session::OAuthSession;
-use atproto_oauth::ssrf::SsrfFilter;
+use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata, StoredStateEntry};
+use skyauth::crypto::constant_time_eq;
+use skyauth::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache, DPoPVerifier};
+use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
+use skyauth::identity::IdentityResolverBuilder;
+use skyauth::par::{build_authorization_url, execute_par_request, ParParameters, ParResponse};
+use skyauth::session::OAuthSession;
+use skyauth::ssrf::SsrfFilter;
 
 use e2e_harness::fixtures::*;
 use e2e_harness::MockOAuthEnvironment;

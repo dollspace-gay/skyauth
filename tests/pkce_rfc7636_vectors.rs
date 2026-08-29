@@ -1,10 +1,8 @@
 //! Integration and property tests for RFC 7636 PKCE.
 
-use atproto_oauth::error::PkceError;
-use atproto_oauth::pkce::{
-    derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair,
-};
 use proptest::prelude::*;
+use skyauth::error::PkceError;
+use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair};
 
 #[test]
 fn test_rfc7636_appendix_b_official_test_vector() {

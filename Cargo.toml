@@ -1,19 +1,19 @@
 [package]
-name = "atproto-oauth-rs"
+name = "skyauth"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mike <mike@example.com>"]
-description = "Pure-Rust OAuth 2.1, DPoP (RFC 9449), and PAR (RFC 9126) client library for the AT Protocol"
+description = "High-assurance, formally verified OAuth 2.1 and RFC 9449 DPoP authentication engine for the AT Protocol (Bluesky)"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/mike10010100/atproto-oauth-rs"
-homepage = "https://github.com/mike10010100/atproto-oauth-rs"
-documentation = "https://docs.rs/atproto-oauth-rs"
+repository = "https://github.com/mike10010100/skyauth"
+homepage = "https://github.com/mike10010100/skyauth"
+documentation = "https://docs.rs/skyauth"
 keywords = ["atproto", "bluesky", "oauth", "dpop", "pkce"]
 categories = ["authentication", "cryptography", "web-programming"]
 readme = "README.md"
 
 [lib]
-name = "atproto_oauth"
+name = "skyauth"
 path = "src/lib.rs"
 
 [dependencies]

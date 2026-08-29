@@ -22,13 +22,13 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use atproto_oauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
-use atproto_oauth::crypto::base64url_encode;
-use atproto_oauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
-use atproto_oauth::error::IntegrationError;
-use atproto_oauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 use http::{header, Request, Response, StatusCode};
 use p256::pkcs8::DecodePrivateKey;
+use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
+use skyauth::crypto::base64url_encode;
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
+use skyauth::error::IntegrationError;
+use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 use tower_layer::Layer;
 use tower_service::Service;
 use url::Url;
@@ -76,7 +76,7 @@ fn mock_client_metadata() -> OAuthClientMetadata {
 #[cfg(feature = "tower")]
 mod tower_adversarial_tests {
     use super::*;
-    use atproto_oauth::integrations::tower::OAuthAuthLayer;
+    use skyauth::integrations::tower::OAuthAuthLayer;
 
     #[derive(Clone)]
     struct MockService;
@@ -444,7 +444,7 @@ mod tower_adversarial_tests {
         let h_b64 = base64url_encode(header_json.to_string().as_bytes());
         let p_b64 = base64url_encode(payload_json.to_string().as_bytes());
         let signing_input = format!("{h_b64}.{p_b64}");
-        let sig_bytes = atproto_oauth::crypto::sign_p256_raw(
+        let sig_bytes = skyauth::crypto::sign_p256_raw(
             &p256::ecdsa::SigningKey::from_pkcs8_pem(&key.to_pkcs8_pem().unwrap()).unwrap(),
             signing_input.as_bytes(),
         )
@@ -497,7 +497,7 @@ mod tower_adversarial_tests {
         let h_b64 = base64url_encode(header_json.to_string().as_bytes());
         let p_b64 = base64url_encode(payload_json.to_string().as_bytes());
         let signing_input = format!("{h_b64}.{p_b64}");
-        let sig_bytes = atproto_oauth::crypto::sign_p256_raw(
+        let sig_bytes = skyauth::crypto::sign_p256_raw(
             &p256::ecdsa::SigningKey::from_pkcs8_pem(&key.to_pkcs8_pem().unwrap()).unwrap(),
             signing_input.as_bytes(),
         )
@@ -622,8 +622,8 @@ mod tower_adversarial_tests {
 #[cfg(feature = "axum")]
 mod axum_adversarial_tests {
     use super::*;
-    use atproto_oauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
     use axum::extract::FromRequestParts;
+    use skyauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
 
     #[tokio::test]
     async fn test_axum_missing_code_and_state_parameters() {
@@ -807,7 +807,7 @@ mod actix_adversarial_tests {
     use actix_web::http::StatusCode as ActixStatusCode;
     use actix_web::test::TestRequest;
     use actix_web::FromRequest;
-    use atproto_oauth::integrations::actix::{
+    use skyauth::integrations::actix::{
         client_metadata_http_response, redirect_to_authorization_http_response,
     };
 

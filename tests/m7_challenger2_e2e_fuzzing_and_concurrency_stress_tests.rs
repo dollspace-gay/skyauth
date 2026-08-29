@@ -29,30 +29,28 @@ use serde_json::json;
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use atproto_oauth::client::{
+use skyauth::client::{
     AtprotoOAuthClient, AtprotoOAuthClientBuilder, CallbackParams, OAuthClientMetadata,
     StoredStateEntry, TokenResponse,
 };
-use atproto_oauth::crypto::{base64url_decode, base64url_encode, constant_time_eq};
-use atproto_oauth::discovery::{
+use skyauth::crypto::{base64url_decode, base64url_encode, constant_time_eq};
+use skyauth::discovery::{
     fetch_auth_server_metadata, fetch_protected_resource_metadata,
     validate_auth_server_capabilities, AuthorizationServerMetadata, ProtectedResourceMetadata,
 };
-use atproto_oauth::dpop::{
+use skyauth::dpop::{
     compute_access_token_hash, extract_dpop_nonce, DPoPKey, DPoPNonceCache, DPoPVerifier,
 };
-use atproto_oauth::error::{
+use skyauth::error::{
     AtprotoOAuthError, CryptoError, DPoPError, DiscoveryError, IdentityError, ParError, PkceError,
     SsrfError, StoreError, TokenError,
 };
-use atproto_oauth::identity::{DidDocument, IdentityResolver, IdentityResolverBuilder};
-use atproto_oauth::par::{
-    build_authorization_url, execute_par_request, ParParameters, ParResponse,
-};
-use atproto_oauth::pkce::{derive_s256_challenge, PkcePair};
-use atproto_oauth::session::OAuthSession;
-use atproto_oauth::ssrf::SsrfFilter;
-use atproto_oauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
+use skyauth::identity::{DidDocument, IdentityResolver, IdentityResolverBuilder};
+use skyauth::par::{build_authorization_url, execute_par_request, ParParameters, ParResponse};
+use skyauth::pkce::{derive_s256_challenge, PkcePair};
+use skyauth::session::OAuthSession;
+use skyauth::ssrf::SsrfFilter;
+use skyauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 
 use e2e_harness::fixtures::*;
 use e2e_harness::MockOAuthEnvironment;

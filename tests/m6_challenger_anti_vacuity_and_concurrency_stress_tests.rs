@@ -22,18 +22,18 @@ use std::time::{Duration, SystemTime};
 
 use proptest::prelude::*;
 
-use atproto_oauth::client::StoredStateEntry;
-use atproto_oauth::crypto::constant_time_eq;
-use atproto_oauth::dpop::{normalize_htu, DPoPKey};
-use atproto_oauth::pkce::{derive_s256_challenge, validate_verifier};
-use atproto_oauth::ssrf::{is_restricted_ip, SsrfFilter};
-use atproto_oauth::store::{OAuthStateStore, OAuthStore};
-use atproto_oauth::verification::kani_harnesses::{
+use skyauth::client::StoredStateEntry;
+use skyauth::crypto::constant_time_eq;
+use skyauth::dpop::{normalize_htu, DPoPKey};
+use skyauth::pkce::{derive_s256_challenge, validate_verifier};
+use skyauth::ssrf::{is_restricted_ip, SsrfFilter};
+use skyauth::store::{OAuthStateStore, OAuthStore};
+use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection, AntiVacuityCoverage,
 };
-use atproto_oauth::verification::verus_contracts::{
+use skyauth::verification::verus_contracts::{
     ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
     SsrfFormalSpec, StateTransitionStatus,
 };

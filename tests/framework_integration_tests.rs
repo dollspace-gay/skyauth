@@ -4,11 +4,11 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use atproto_oauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
-use atproto_oauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
-use atproto_oauth::error::IntegrationError;
-use atproto_oauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 use http::{header, Request, Response, StatusCode};
+use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
+use skyauth::error::IntegrationError;
+use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 use tower_layer::Layer;
 use tower_service::Service;
 use url::Url;
@@ -56,8 +56,8 @@ fn mock_client_metadata() -> OAuthClientMetadata {
 #[cfg(feature = "axum")]
 mod axum_tests {
     use super::*;
-    use atproto_oauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
     use axum::extract::FromRequestParts;
+    use skyauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
 
     #[tokio::test]
     async fn test_axum_extract_callback_query_valid() {
@@ -183,7 +183,7 @@ mod actix_tests {
     use actix_web::http::header as actix_header;
     use actix_web::test::TestRequest;
     use actix_web::{FromRequest, HttpMessage};
-    use atproto_oauth::integrations::actix::{
+    use skyauth::integrations::actix::{
         client_metadata_http_response, redirect_to_authorization_http_response,
     };
 
@@ -280,14 +280,14 @@ mod actix_tests {
 #[cfg(feature = "tower")]
 mod tower_tests {
     use super::*;
-    use atproto_oauth::integrations::tower::OAuthAuthLayer;
+    use skyauth::integrations::tower::OAuthAuthLayer;
     use tower::service_fn;
 
     #[tokio::test]
     async fn test_tower_middleware_full_dpop_handshake_flow() {
         let key = DPoPKey::generate();
         let jkt = key.jwk_thumbprint();
-        let access_token = "valid_atproto_oauth_token_12345";
+        let access_token = "valid_skyauth_token_12345";
         let ath = compute_access_token_hash(access_token);
         let uri = "https://pds.example.com/xrpc/app.bsky.feed.getTimeline";
 
@@ -307,7 +307,7 @@ mod tower_tests {
                     "AuthenticatedUser must be injected into extensions"
                 );
                 let u = user.unwrap();
-                assert_eq!(u.access_token, "valid_atproto_oauth_token_12345");
+                assert_eq!(u.access_token, "valid_skyauth_token_12345");
                 assert_eq!(u.dpop_thumbprint, expected_jkt);
                 Ok::<Response<String>, Infallible>(Response::new("XRPC Response Data".to_string()))
             }

@@ -22,12 +22,12 @@ use std::process::Command;
 
 use serde_json::{json, Value};
 
-use atproto_oauth::client::{OAuthClientMetadata, TokenResponse};
-use atproto_oauth::crypto::sha256_digest;
-use atproto_oauth::discovery::{AuthorizationServerMetadata, ProtectedResourceMetadata};
-use atproto_oauth::dpop::DPoPProofClaims;
-use atproto_oauth::identity::{DidDocument, DidService, VerificationMethod};
-use atproto_oauth::par::ParResponse;
+use skyauth::client::{OAuthClientMetadata, TokenResponse};
+use skyauth::crypto::sha256_digest;
+use skyauth::discovery::{AuthorizationServerMetadata, ProtectedResourceMetadata};
+use skyauth::dpop::DPoPProofClaims;
+use skyauth::identity::{DidDocument, DidService, VerificationMethod};
+use skyauth::par::ParResponse;
 
 // Static bundled schema includes for zero-IO fallback & compile-time inclusion
 const RFC8414_SCHEMA_STR: &str = include_str!("../schemas/rfc8414_authorization_server.json");

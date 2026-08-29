@@ -1,4 +1,4 @@
-# 🔐 `atproto-oauth-rs`
+# 🔐 `skyauth`
 
 [![crates.io](https://img.shields.io/crates/v/atproto-oauth.svg)](https://crates.io/crates/atproto-oauth)
 [![docs.rs](https://docs.rs/atproto-oauth/badge.svg)](https://docs.rs/atproto-oauth)
@@ -37,8 +37,8 @@ atproto-oauth = "0.1"
 ### 1. DPoP Proof Generation & Verification
 
 ```rust
-use atproto_oauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
-use atproto_oauth::pkce::PkcePair;
+use skyauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
+use skyauth::pkce::PkcePair;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Generate PKCE code challenge
@@ -76,8 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. Full OAuth Client Lifecycle
 
 ```rust
-use atproto_oauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
-use atproto_oauth::store::OAuthStateStore;
+use skyauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
+use skyauth::store::OAuthStateStore;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🛡️ Formal Verification & Mathematical Invariants
 
-`atproto-oauth-rs` incorporates a multi-layered formal verification hierarchy to eliminate security vulnerabilities:
+`skyauth` incorporates a multi-layered formal verification hierarchy to eliminate security vulnerabilities:
 
 1. **Verus Deductive Contracts (`verus!`)**: Mathematical proofs for session state transitions, constant-time comparisons, and PKCE deterministic bounds.
 2. **Kani Bounded Model Checking (`kani::proof`)**: 5 exhaustive verification harnesses checking all symbolic byte inputs.

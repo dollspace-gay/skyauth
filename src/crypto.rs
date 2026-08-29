@@ -22,7 +22,7 @@ use crate::error::CryptoError;
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::constant_time_eq;
+/// use skyauth::crypto::constant_time_eq;
 ///
 /// assert!(constant_time_eq(b"secret_token", b"secret_token"));
 /// assert!(!constant_time_eq(b"secret_token", b"wrong_token_"));
@@ -40,7 +40,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::sha256_digest;
+/// use skyauth::crypto::sha256_digest;
 ///
 /// let hash = sha256_digest(b"hello world");
 /// assert_eq!(hash.len(), 32);
@@ -64,7 +64,7 @@ pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::hmac_sha256;
+/// use skyauth::crypto::hmac_sha256;
 ///
 /// let mac = hmac_sha256(b"my-secret-key", b"message content").expect("hmac generation");
 /// assert_eq!(mac.len(), 32);
@@ -85,7 +85,7 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> Result<[u8; 32], CryptoError> 
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::base64url_encode;
+/// use skyauth::crypto::base64url_encode;
 ///
 /// let encoded = base64url_encode(&[0x00, 0x01, 0x02]);
 /// assert_eq!(encoded, "AAEC");
@@ -104,7 +104,7 @@ pub fn base64url_encode(data: &[u8]) -> String {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::base64url_decode;
+/// use skyauth::crypto::base64url_decode;
 ///
 /// let decoded = base64url_decode("AAEC").expect("valid base64url");
 /// assert_eq!(decoded, vec![0x00, 0x01, 0x02]);
@@ -226,7 +226,7 @@ pub fn verifying_key_to_coordinates(verifying_key: &VerifyingKey) -> ([u8; 32], 
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::jwk_thumbprint_ec_p256;
+/// use skyauth::crypto::jwk_thumbprint_ec_p256;
 ///
 /// let jkt = jwk_thumbprint_ec_p256(
 ///     "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs",
@@ -249,7 +249,7 @@ pub fn jwk_thumbprint_ec_p256(x: &str, y: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use atproto_oauth::crypto::jwk_thumbprint_rsa;
+/// use skyauth::crypto::jwk_thumbprint_rsa;
 ///
 /// let jkt = jwk_thumbprint_rsa(
 ///     "AQAB",

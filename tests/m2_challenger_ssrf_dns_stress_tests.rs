@@ -23,8 +23,8 @@ use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use atproto_oauth::error::SsrfError;
-use atproto_oauth::ssrf::{
+use skyauth::error::SsrfError;
+use skyauth::ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
 };
 
@@ -761,7 +761,7 @@ fn test_ssrf_urls_with_embedded_credentials() {
 
 #[tokio::test]
 async fn test_did_web_with_private_ip_rejected_in_strict_mode() {
-    use atproto_oauth::identity::IdentityResolver;
+    use skyauth::identity::IdentityResolver;
 
     let resolver = IdentityResolver::builder()
         .allow_insecure_localhost(false) // strict mode
@@ -793,7 +793,7 @@ async fn test_did_web_with_private_ip_rejected_in_strict_mode() {
 
 #[tokio::test]
 async fn test_pds_discovery_malicious_private_endpoint_blocked() {
-    use atproto_oauth::discovery::fetch_protected_resource_metadata;
+    use skyauth::discovery::fetch_protected_resource_metadata;
 
     let filter = SsrfFilter::new(false); // strict mode
 
@@ -814,7 +814,7 @@ async fn test_pds_discovery_malicious_private_endpoint_blocked() {
 
 #[tokio::test]
 async fn test_auth_server_discovery_malicious_as_endpoint_blocked() {
-    use atproto_oauth::discovery::fetch_auth_server_metadata;
+    use skyauth::discovery::fetch_auth_server_metadata;
 
     let filter = SsrfFilter::new(false); // strict mode
 

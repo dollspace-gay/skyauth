@@ -16,17 +16,17 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 
-use atproto_oauth::crypto::constant_time_eq;
-use atproto_oauth::dpop::normalize_htu;
-use atproto_oauth::pkce::validate_verifier;
-use atproto_oauth::ssrf::{is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
-use atproto_oauth::store::OAuthStateStore;
-use atproto_oauth::verification::kani_harnesses::{
+use skyauth::crypto::constant_time_eq;
+use skyauth::dpop::normalize_htu;
+use skyauth::pkce::validate_verifier;
+use skyauth::ssrf::{is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
+use skyauth::store::OAuthStateStore;
+use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection,
 };
-use atproto_oauth::verification::verus_contracts::{
+use skyauth::verification::verus_contracts::{
     ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
     SsrfFormalSpec, StateTransitionStatus,
 };
@@ -321,12 +321,12 @@ fn test_kani_proof_dpop_htu_normalization_invariants_with_reachability() {
 // SECTION 3: Property-Based Model Equivalence & State Space Exploration
 // =========================================================================
 
-fn mock_stored_state(state: &str) -> atproto_oauth::client::StoredStateEntry {
-    atproto_oauth::client::StoredStateEntry {
+fn mock_stored_state(state: &str) -> skyauth::client::StoredStateEntry {
+    skyauth::client::StoredStateEntry {
         state: state.to_string(),
         client_id: "https://app.example.com/client-metadata.json".to_string(),
         code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
-        dpop_key: atproto_oauth::dpop::DPoPKey::generate(),
+        dpop_key: skyauth::dpop::DPoPKey::generate(),
         issuer: "https://auth.example.com".to_string(),
         did: Some("did:plc:alice123".to_string()),
         handle: Some("alice.bsky.social".to_string()),

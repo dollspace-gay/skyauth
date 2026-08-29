@@ -2,14 +2,14 @@
 
 use std::time::Duration;
 
-use atproto_oauth::crypto::{
+use skyauth::crypto::{
     base64url_decode, base64url_encode, jwk_thumbprint_ec_p256, jwk_thumbprint_rsa,
 };
-use atproto_oauth::dpop::{
+use skyauth::dpop::{
     compute_access_token_hash, extract_dpop_nonce, normalize_htu, DPoPKey, DPoPNonceCache,
     DPoPVerifier, JwkEc,
 };
-use atproto_oauth::error::DPoPError;
+use skyauth::error::DPoPError;
 
 #[test]
 fn test_rfc7638_section3_1_rsa_thumbprint() {

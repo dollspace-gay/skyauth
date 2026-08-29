@@ -124,15 +124,14 @@ impl MockDnsResolver {
     }
 }
 
-impl atproto_oauth::identity::DnsTxtResolver for MockDnsResolver {
+impl skyauth::identity::DnsTxtResolver for MockDnsResolver {
     fn resolve_txt<'a>(
         &'a self,
         query_name: &'a str,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<String>, atproto_oauth::error::IdentityError>,
-                > + Send
+            dyn std::future::Future<Output = Result<Vec<String>, skyauth::error::IdentityError>>
+                + Send
                 + 'a,
         >,
     > {
@@ -141,12 +140,12 @@ impl atproto_oauth::identity::DnsTxtResolver for MockDnsResolver {
             match result {
                 MockDnsResult::Records(r) => Ok(r),
                 MockDnsResult::NxDomain => Ok(Vec::new()),
-                MockDnsResult::ServFail => Err(atproto_oauth::error::IdentityError::Dns(
-                    "SERVFAIL".to_string(),
-                )),
-                MockDnsResult::Timeout => Err(atproto_oauth::error::IdentityError::Dns(
-                    "Timeout".to_string(),
-                )),
+                MockDnsResult::ServFail => {
+                    Err(skyauth::error::IdentityError::Dns("SERVFAIL".to_string()))
+                }
+                MockDnsResult::Timeout => {
+                    Err(skyauth::error::IdentityError::Dns("Timeout".to_string()))
+                }
             }
         })
     }

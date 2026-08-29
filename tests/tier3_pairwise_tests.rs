@@ -13,11 +13,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use atproto_oauth::crypto::{base64url_decode, constant_time_eq, hmac_sha256};
-use atproto_oauth::dpop::{
+use skyauth::crypto::{base64url_decode, constant_time_eq, hmac_sha256};
+use skyauth::dpop::{
     compute_access_token_hash, normalize_htu, DPoPKey, DPoPNonceCache, DPoPVerifier,
 };
-use atproto_oauth::pkce::{verify_pkce, PkcePair};
+use skyauth::pkce::{verify_pkce, PkcePair};
 
 // =========================================================================
 // PAIRWISE GROUP 1: Crypto x DPoP x PKCE Interactions (6 Tests)
@@ -473,7 +473,7 @@ fn test_p3_06_dpop_proof_with_mismatched_method_rejected() {
     let res = verifier.verify_proof(&proof, "GET", uri, None, None, None);
     assert!(matches!(
         res,
-        Err(atproto_oauth::error::DPoPError::MethodMismatch { .. })
+        Err(skyauth::error::DPoPError::MethodMismatch { .. })
     ));
 }
 

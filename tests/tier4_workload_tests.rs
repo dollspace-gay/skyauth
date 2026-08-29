@@ -11,8 +11,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use atproto_oauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
-use atproto_oauth::pkce::PkcePair;
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
+use skyauth::pkce::PkcePair;
 
 // =========================================================================
 // WORKLOAD 1: Complete End-to-End User Login Lifecycle
