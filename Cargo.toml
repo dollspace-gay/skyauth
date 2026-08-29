@@ -66,6 +66,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 http-body-util = "0.1"
 
 [lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
+[lints.clippy]
+all = { level = "deny", priority = -1 }
 
