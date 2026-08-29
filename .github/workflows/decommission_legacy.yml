@@ -1,0 +1,74 @@
+name: Decommission Legacy Package (atproto-oauth-rs)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  decommission:
+    name: Publish Deprecation Forwarder Stub & Yank v0.1.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare Deprecation Forwarder Crate
+        run: |
+          mkdir -p /tmp/atproto-oauth-rs/src
+          cat << 'SUB_EOF' > /tmp/atproto-oauth-rs/Cargo.toml
+          [package]
+          name = "atproto-oauth-rs"
+          version = "0.1.1"
+          edition = "2021"
+          authors = ["Mike <mike@example.com>"]
+          description = "⚠️ DEPRECATED: Renamed to 'skyauth'. Please use the 'skyauth' crate."
+          license = "MIT OR Apache-2.0"
+          repository = "https://github.com/mike10010100/skyauth"
+          documentation = "https://docs.rs/skyauth"
+          readme = "README.md"
+
+          [dependencies]
+          skyauth = "0.1.0"
+          SUB_EOF
+
+          cat << 'SUB_EOF' > /tmp/atproto-oauth-rs/README.md
+          # ⚠️ Package Renamed to `skyauth`
+
+          This crate (\`atproto-oauth-rs\`) has been officially renamed to **[\`skyauth\`](https://crates.io/crates/skyauth)**.
+
+          ### Migration
+
+          Update your \`Cargo.toml\`:
+
+          \`\`\`toml
+          [dependencies]
+          skyauth = "0.1"
+          \`\`\`
+          SUB_EOF
+
+          cat << 'SUB_EOF' > /tmp/atproto-oauth-rs/src/lib.rs
+          #![forbid(unsafe_code)]
+          #![warn(missing_docs)]
+
+          //! # ⚠️ Deprecation Notice
+          //!
+          //! \`atproto-oauth-rs\` has been renamed to [\`skyauth\`](https://crates.io/crates/skyauth).
+          //!
+          //! Please update your \`Cargo.toml\` dependencies:
+          //! \`\`\`toml
+          //! [dependencies]
+          //! skyauth = "0.1"
+          //! \`\`\`
+
+          pub use skyauth::*;
+          SUB_EOF
+
+      - name: Publish Forwarder Stub & Yank Legacy v0.1.0
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cd /tmp/atproto-oauth-rs
+          cargo publish --allow-dirty --token "${CARGO_REGISTRY_TOKEN}"
+          cargo yank --version 0.1.0 atproto-oauth-rs --token "${CARGO_REGISTRY_TOKEN}" || true
