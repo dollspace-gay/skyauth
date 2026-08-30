@@ -28,7 +28,9 @@ use std::sync::Arc;
 #[cfg(feature = "tower")]
 use std::task::{Context, Poll};
 #[cfg(feature = "tower")]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+#[cfg(all(feature = "tower", feature = "test-export"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "tower")]
 use http::Response;
