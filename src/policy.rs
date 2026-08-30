@@ -190,7 +190,7 @@ pub const fn scope_policy_accepts(has_atproto: bool, has_all_route_scopes: bool)
         || a == 127
         || (a == 169 && b == 254)
         || (a == 172 && b >= 16 && b <= 31)
-        || (a == 192 && b == 0 && (c == 0 || c == 2))
+        || (a == 192 && b == 0 && ((c == 0 && d != 9 && d != 10) || c == 2))
         || (a == 192 && b == 31 && c == 196)
         || (a == 192 && b == 52 && c == 193)
         || (a == 192 && b == 88 && c == 99)
@@ -201,14 +201,14 @@ pub const fn scope_policy_accepts(has_atproto: bool, has_all_route_scopes: bool)
         || (a == 203 && b == 0 && c == 113)
         || a >= 224
 ))]
-pub const fn ipv4_is_restricted(a: u8, b: u8, c: u8, _d: u8) -> bool {
+pub const fn ipv4_is_restricted(a: u8, b: u8, c: u8, d: u8) -> bool {
     a == 0
         || a == 10
         || (a == 100 && b >= 64 && b <= 127)
         || a == 127
         || (a == 169 && b == 254)
         || (a == 172 && b >= 16 && b <= 31)
-        || (a == 192 && b == 0 && (c == 0 || c == 2))
+        || (a == 192 && b == 0 && ((c == 0 && d != 9 && d != 10) || c == 2))
         || (a == 192 && b == 31 && c == 196)
         || (a == 192 && b == 52 && c == 193)
         || (a == 192 && b == 88 && c == 99)

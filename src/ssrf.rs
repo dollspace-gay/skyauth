@@ -17,19 +17,22 @@
 //! 4. **Response Size Capping**: Limits stream reads to prevent memory exhaustion
 //!    or decompression bombs.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
-use url::Url;
+use url::{Host, Url};
 
 use crate::error::SsrfError;
 use crate::policy::{ipv4_is_restricted, ipv6_is_restricted};
 
 const MAX_RESPONSE_HEADER_BYTES: usize = 65_536;
+const MAX_PINNED_CLIENTS: usize = 64;
 
 trait AddressResolver: std::fmt::Debug + Send + Sync + 'static {
     fn resolve<'a>(
@@ -66,7 +69,8 @@ impl AddressResolver for SystemAddressResolver {
 /// - `127.0.0.0/8`: Loopback (RFC 1122)
 /// - `169.254.0.0/16`: Link-Local, includes AWS/GCP/Azure metadata `169.254.169.254` (RFC 3927)
 /// - `172.16.0.0/12`: Private-Use (RFC 1918: `172.16.0.0` - `172.31.255.255`)
-/// - `192.0.0.0/24`: IETF Protocol Assignments (RFC 6890)
+/// - `192.0.0.0/24`: IETF Protocol Assignments except globally reachable anycast
+///   addresses `192.0.0.9` and `192.0.0.10` (IANA special-purpose registry)
 /// - `192.0.2.0/24`: Documentation TEST-NET-1 (RFC 5737)
 /// - `192.31.196.0/24`: AS112-v4 (RFC 7535)
 /// - `192.52.193.0/24`: AMT (RFC 7450)
@@ -118,6 +122,26 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_restricted_ipv4(&v4),
         IpAddr::V6(v6) => is_restricted_ipv6(&v6),
+    }
+}
+
+/// Reports whether a parsed URL has the canonical IPv4 or IPv6 loopback host.
+pub(crate) fn is_loopback_ip_host(url: &Url) -> bool {
+    matches!(
+        url.host(),
+        Some(Host::Ipv4(address)) if address == Ipv4Addr::LOCALHOST
+    ) || matches!(
+        url.host(),
+        Some(Host::Ipv6(address)) if address == Ipv6Addr::LOCALHOST
+    )
+}
+
+/// Extracts an IP-literal host without relying on bracketed display formatting.
+fn ip_literal(url: &Url) -> Option<IpAddr> {
+    match url.host() {
+        Some(Host::Ipv4(address)) => Some(IpAddr::V4(address)),
+        Some(Host::Ipv6(address)) => Some(IpAddr::V6(address)),
+        Some(Host::Domain(_)) | None => None,
     }
 }
 
@@ -229,7 +253,7 @@ impl SsrfFilter {
         }
 
         // If host is an IP literal, validate immediately
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Some(ip) = ip_literal(url) {
             self.validate_ip(ip)?;
         }
 
@@ -267,7 +291,7 @@ impl SsrfFilter {
         };
 
         // If host is an IP literal
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Some(ip) = ip_literal(url) {
             self.validate_ip(ip)?;
             return Ok((SocketAddr::new(ip, port), host_header));
         }
@@ -416,15 +440,36 @@ pub(crate) struct SafeHttpClient {
     connect_timeout: Duration,
     request_timeout: Duration,
     resolver: Arc<dyn AddressResolver>,
+    clients: Arc<Mutex<PinnedClientCache>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PinnedClientKey {
+    host: String,
+    address: Option<SocketAddr>,
+}
+
+#[derive(Debug)]
+struct CachedClient {
+    client: reqwest::Client,
+    sequence: u128,
+}
+
+#[derive(Debug, Default)]
+struct PinnedClientCache {
+    entries: HashMap<PinnedClientKey, CachedClient>,
+    next_sequence: u128,
 }
 
 impl SafeHttpClient {
+    /// Creates a centralized transport with production resolver and timeout defaults.
     pub(crate) fn new(filter: SsrfFilter) -> Self {
         Self {
             filter,
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(15),
             resolver: Arc::new(SystemAddressResolver),
+            clients: Arc::new(Mutex::new(PinnedClientCache::default())),
         }
     }
 
@@ -435,6 +480,7 @@ impl SafeHttpClient {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(15),
             resolver,
+            clients: Arc::new(Mutex::new(PinnedClientCache::default())),
         }
     }
 
@@ -444,6 +490,19 @@ impl SafeHttpClient {
         url_str: &str,
         headers: HeaderMap,
         body: Option<Vec<u8>>,
+    ) -> Result<reqwest::Response, SsrfError> {
+        self.send_with_timeout(method, url_str, headers, body, self.request_timeout)
+            .await
+    }
+
+    /// Sends one request with a call-specific overall timeout and pinned resolution.
+    pub(crate) async fn send_with_timeout(
+        &self,
+        method: reqwest::Method,
+        url_str: &str,
+        headers: HeaderMap,
+        body: Option<Vec<u8>>,
+        request_timeout: Duration,
     ) -> Result<reqwest::Response, SsrfError> {
         let url = Url::parse(url_str)
             .map_err(|e| SsrfError::InvalidUrl(format!("Failed to parse URL '{url_str}': {e}")))?;
@@ -455,33 +514,81 @@ impl SafeHttpClient {
             .host_str()
             .ok_or_else(|| SsrfError::InvalidUrl("Missing hostname in URL".to_string()))?;
 
-        let mut builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout)
-            .pool_max_idle_per_host(0)
-            .no_proxy();
-        if host.parse::<IpAddr>().is_err() {
-            builder = builder.resolve(host, pinned_addr);
-        }
-
-        let client = builder
-            .build()
-            .map_err(|e| SsrfError::Http(e.to_string()))?;
+        let literal = ip_literal(&url).is_some();
+        let key = PinnedClientKey {
+            host: host.to_ascii_lowercase(),
+            address: (!literal).then_some(pinned_addr),
+        };
+        let client = self.client_for(&key, host, pinned_addr, literal)?;
         let mut request = client.request(method, url).headers(headers);
         if let Some(bytes) = body {
             request = request.body(bytes);
         }
 
-        let response = request
-            .send()
+        let response = tokio::time::timeout(request_timeout, request.send())
             .await
+            .map_err(|_| SsrfError::Http("request timed out".to_string()))?
             .map_err(|e| SsrfError::Http(e.to_string()))?;
         validate_response_headers(&response)?;
         Ok(response)
     }
+
+    /// Reuses or creates a client bound to the currently validated address.
+    fn client_for(
+        &self,
+        key: &PinnedClientKey,
+        host: &str,
+        pinned_addr: SocketAddr,
+        literal: bool,
+    ) -> Result<reqwest::Client, SsrfError> {
+        if let Some(client) = self
+            .clients
+            .lock()
+            .entries
+            .get(key)
+            .map(|entry| entry.client.clone())
+        {
+            return Ok(client);
+        }
+
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(self.connect_timeout)
+            .timeout(self.request_timeout)
+            .pool_max_idle_per_host(8)
+            .no_proxy();
+        if !literal {
+            builder = builder.resolve(host, pinned_addr);
+        }
+        let client = builder
+            .build()
+            .map_err(|error| SsrfError::Http(error.to_string()))?;
+
+        let mut cache = self.clients.lock();
+        if cache.entries.len() >= MAX_PINNED_CLIENTS && !cache.entries.contains_key(key) {
+            if let Some(oldest) = cache
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.sequence)
+                .map(|(key, _)| key.clone())
+            {
+                cache.entries.remove(&oldest);
+            }
+        }
+        let sequence = cache.next_sequence;
+        cache.next_sequence = cache.next_sequence.saturating_add(1);
+        cache.entries.insert(
+            key.clone(),
+            CachedClient {
+                client: client.clone(),
+                sequence,
+            },
+        );
+        Ok(client)
+    }
 }
 
+/// Enforces total header and content-encoding bounds before body reads.
 fn validate_response_headers(response: &reqwest::Response) -> Result<(), SsrfError> {
     let total = response
         .headers()
@@ -498,9 +605,13 @@ fn validate_response_headers(response: &reqwest::Response) -> Result<(), SsrfErr
     }
     if response
         .headers()
-        .get(reqwest::header::CONTENT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| !value.eq_ignore_ascii_case("identity"))
+        .get_all(reqwest::header::CONTENT_ENCODING)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .map_or(true, |encoding| !encoding.eq_ignore_ascii_case("identity"))
+        })
     {
         return Err(SsrfError::UnsupportedContentEncoding);
     }
@@ -624,6 +735,11 @@ mod tests {
     #[test]
     fn test_documentation_and_benchmarking_ranges() {
         let filter = SsrfFilter::new(false);
+        assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1))));
+        assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 0, 8))));
+        assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 0, 9))));
+        assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 0, 10))));
+        assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 0, 170))));
         // TEST-NET-1 192.0.2.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
         // TEST-NET-2 198.51.100.1
@@ -715,15 +831,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validated_address_is_pinned_for_the_connection() {
-        use tokio::io::AsyncWriteExt;
+    async fn same_origin_redirect_revalidates_dns_and_blocks_rebinding() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: /redirected\r\nContent-Length: 0\r\n\r\n",
+                )
                 .await
                 .unwrap();
         });
@@ -735,17 +855,31 @@ mod tests {
             SsrfFilter::new(true),
             resolver.clone() as Arc<dyn AddressResolver>,
         );
+        let start_url = format!("http://localhost:{}/start", address.port());
         let response = client
+            .send(reqwest::Method::GET, &start_url, HeaderMap::new(), None)
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+        let next_url = Url::parse(&start_url)
+            .unwrap()
+            .join(
+                response.headers()[reqwest::header::LOCATION]
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(Url::parse(&start_url).unwrap().origin(), next_url.origin());
+        let rebound = client
             .send(
                 reqwest::Method::GET,
-                &format!("http://localhost:{}/resource", address.port()),
+                next_url.as_str(),
                 HeaderMap::new(),
                 None,
             )
-            .await
-            .unwrap();
-        assert_eq!(collect_limited(response, 2).await.unwrap(), b"ok");
-        assert_eq!(resolver.calls(), 1);
+            .await;
+        assert!(matches!(rebound, Err(SsrfError::BlockedIp(_))));
+        assert_eq!(resolver.calls(), 2);
         server.await.unwrap();
     }
 

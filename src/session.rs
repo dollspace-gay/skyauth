@@ -69,6 +69,17 @@ impl SecretExportPermit {
     pub const fn for_encrypted_persistence() -> Self {
         Self(())
     }
+
+    /// Acknowledges a controlled test fixture that must sign deliberately malformed material.
+    ///
+    /// This authority is compiled only for unit tests or the internal `test-export` feature used
+    /// by adversarial integration tests. It must not be used for persistent storage.
+    #[cfg(any(test, feature = "test-export"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn for_test_signing() -> Self {
+        Self(())
+    }
 }
 
 impl OAuthSession {
@@ -292,7 +303,10 @@ impl OAuthSession {
         &self,
         _permit: SecretExportPermit,
     ) -> Result<Zeroizing<Vec<u8>>, AtprotoOAuthError> {
-        let mut output = Zeroizing::new(b"SKYAUTH2".to_vec());
+        let capacity = self.persistence_payload_size()?;
+        let mut bytes = Vec::with_capacity(capacity);
+        bytes.extend_from_slice(b"SKYAUTH2");
+        let mut output = Zeroizing::new(bytes);
         write_string(&mut output, &self.session_id)?;
         output.extend_from_slice(&self.generation.to_be_bytes());
         write_string(&mut output, &self.sub)?;
@@ -310,6 +324,38 @@ impl OAuthSession {
         write_optional_string(&mut output, self.token_endpoint.as_deref())?;
         write_time(&mut output, self.created_at)?;
         Ok(output)
+    }
+
+    /// Computes the exact framed persistence payload size without exposing secrets.
+    fn persistence_payload_size(&self) -> Result<usize, TokenError> {
+        let mut size = 8usize;
+        for value in [
+            self.session_id.as_str(),
+            self.sub.as_str(),
+            self.access_token.expose(),
+            self.token_type.as_str(),
+        ] {
+            size = checked_payload_add(size, encoded_string_size(value)?)?;
+        }
+        size = checked_payload_add(size, 8)?;
+        for value in [
+            self.refresh_token.as_ref().map(SecretString::expose),
+            self.scope.as_deref(),
+            self.pds_endpoint.as_deref(),
+            self.auth_server_issuer.as_deref(),
+            self.token_endpoint.as_deref(),
+        ] {
+            size = checked_payload_add(size, 1)?;
+            if let Some(value) = value {
+                size = checked_payload_add(size, encoded_string_size(value)?)?;
+            }
+        }
+        size = checked_payload_add(size, 1)?;
+        if self.expires_at.is_some() {
+            size = checked_payload_add(size, 8)?;
+        }
+        size = checked_payload_add(size, 32)?;
+        checked_payload_add(size, 8)
     }
 
     /// Imports a session payload produced by [`Self::export_for_persistence`].
@@ -361,6 +407,18 @@ impl OAuthSession {
     }
 }
 
+/// Computes the length-prefixed encoding size for one string.
+fn encoded_string_size(value: &str) -> Result<usize, TokenError> {
+    u32::try_from(value.len()).map_err(|_| TokenError::Persistence)?;
+    checked_payload_add(4, value.len())
+}
+
+/// Adds payload lengths while mapping overflow to a typed token error.
+fn checked_payload_add(left: usize, right: usize) -> Result<usize, TokenError> {
+    left.checked_add(right).ok_or(TokenError::Persistence)
+}
+
+/// Writes one length-prefixed UTF-8 string into a reserved payload.
 fn write_string(output: &mut Vec<u8>, value: &str) -> Result<(), TokenError> {
     let length = u32::try_from(value.len()).map_err(|_| TokenError::Persistence)?;
     output.extend_from_slice(&length.to_be_bytes());
@@ -368,6 +426,7 @@ fn write_string(output: &mut Vec<u8>, value: &str) -> Result<(), TokenError> {
     Ok(())
 }
 
+/// Writes an optional length-prefixed UTF-8 string.
 fn write_optional_string(output: &mut Vec<u8>, value: Option<&str>) -> Result<(), TokenError> {
     match value {
         Some(value) => {
@@ -381,6 +440,7 @@ fn write_optional_string(output: &mut Vec<u8>, value: Option<&str>) -> Result<()
     }
 }
 
+/// Writes a system timestamp as seconds from the Unix epoch.
 fn write_time(output: &mut Vec<u8>, value: SystemTime) -> Result<(), TokenError> {
     let seconds = value
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -390,6 +450,7 @@ fn write_time(output: &mut Vec<u8>, value: SystemTime) -> Result<(), TokenError>
     Ok(())
 }
 
+/// Writes an optional system timestamp.
 fn write_optional_time(output: &mut Vec<u8>, value: Option<SystemTime>) -> Result<(), TokenError> {
     match value {
         Some(value) => {
@@ -409,6 +470,7 @@ struct PersistenceReader<'a> {
 }
 
 impl<'a> PersistenceReader<'a> {
+    /// Creates a reader after checking the persistence format prefix.
     fn new(bytes: &'a [u8]) -> Result<Self, TokenError> {
         if !bytes.starts_with(b"SKYAUTH2") {
             return Err(TokenError::Persistence);
@@ -416,6 +478,7 @@ impl<'a> PersistenceReader<'a> {
         Ok(Self { bytes, offset: 8 })
     }
 
+    /// Consumes an exact number of bytes from the remaining payload.
     fn take(&mut self, length: usize) -> Result<&'a [u8], TokenError> {
         let end = self
             .offset
@@ -477,6 +540,7 @@ impl<'a> PersistenceReader<'a> {
         Ok(output)
     }
 
+    /// Requires the payload to end exactly after the final field.
     fn finish(self) -> Result<(), TokenError> {
         if self.offset == self.bytes.len() {
             Ok(())

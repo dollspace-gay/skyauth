@@ -41,6 +41,9 @@ pub const DEFAULT_STATE_TTL: Duration = Duration::from_secs(300);
 /// Default maximum number of coordinated refresh sessions.
 pub const DEFAULT_MAX_REFRESH_SESSIONS: usize = 4_096;
 
+/// Default idle lifetime for completed refresh-coordination records.
+pub const DEFAULT_REFRESH_RECORD_IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Asynchronous, zero-cost storage abstraction for AT Protocol OAuth state and sessions.
 ///
 /// Implemented by [`OAuthStateStore`] for high-performance in-memory storage, and can
@@ -239,15 +242,17 @@ struct RefreshRecord {
     in_flight: Option<(u64, String)>,
     failed_generation: Option<u64>,
     notify: Arc<Notify>,
+    last_touched: Instant,
 }
 
 impl RefreshRecord {
-    fn new(generation: u64, lease_id: String) -> Self {
+    fn new(generation: u64, lease_id: String, now: Instant) -> Self {
         Self {
             current: None,
             in_flight: Some((generation, lease_id)),
             failed_generation: None,
             notify: Arc::new(Notify::new()),
+            last_touched: now,
         }
     }
 }
@@ -298,6 +303,7 @@ pub struct OAuthStateStore {
     default_ttl: Duration,
     refreshes: Mutex<HashMap<String, RefreshRecord>>,
     max_refresh_sessions: usize,
+    refresh_record_idle_ttl: Duration,
 }
 
 impl Default for OAuthStateStore {
@@ -322,6 +328,7 @@ impl OAuthStateStore {
             default_ttl,
             refreshes: Mutex::new(HashMap::new()),
             max_refresh_sessions,
+            refresh_record_idle_ttl: DEFAULT_REFRESH_RECORD_IDLE_TTL,
         }
     }
 
@@ -493,7 +500,9 @@ impl OAuthStateStore {
         loop {
             let wait = {
                 let mut refreshes = self.refreshes.lock();
+                let now = Instant::now();
                 if let Some(record) = refreshes.get_mut(session_id) {
+                    record.last_touched = now;
                     if let Some(current) = record.current.as_ref() {
                         if current.generation() > generation {
                             return Ok(RefreshAcquire::Current(Box::new(current.clone())));
@@ -511,12 +520,19 @@ impl OAuthStateStore {
                     Some(Arc::clone(&record.notify).notified_owned())
                 } else {
                     if refreshes.len() >= self.max_refresh_sessions {
-                        return Err(StoreError::RefreshCapacity);
+                        Self::prune_idle_refreshes_locked(
+                            &mut refreshes,
+                            now,
+                            self.refresh_record_idle_ttl,
+                        );
+                        if refreshes.len() >= self.max_refresh_sessions {
+                            return Err(StoreError::RefreshCapacity);
+                        }
                     }
                     let lease_id = new_lease_id();
                     refreshes.insert(
                         session_id.to_string(),
-                        RefreshRecord::new(generation, lease_id.clone()),
+                        RefreshRecord::new(generation, lease_id.clone(), now),
                     );
                     return RefreshLease::for_backend(session_id, generation, lease_id)
                         .map(RefreshAcquire::Acquired);
@@ -553,6 +569,7 @@ impl OAuthStateStore {
             record.in_flight = None;
             record.failed_generation = None;
             record.current = Some(replacement.clone());
+            record.last_touched = Instant::now();
             Arc::clone(&record.notify)
         };
         notify.notify_waiters();
@@ -570,10 +587,32 @@ impl OAuthStateStore {
             }
             record.in_flight = None;
             record.failed_generation = Some(lease.generation);
+            record.last_touched = Instant::now();
             Arc::clone(&record.notify)
         };
         notify.notify_waiters();
         Ok(())
+    }
+
+    fn prune_idle_refreshes_locked(
+        refreshes: &mut HashMap<String, RefreshRecord>,
+        now: Instant,
+        idle_ttl: Duration,
+    ) -> usize {
+        let initial = refreshes.len();
+        refreshes.retain(|_, record| {
+            record.in_flight.is_some()
+                || now.saturating_duration_since(record.last_touched) < idle_ttl
+        });
+        initial.saturating_sub(refreshes.len())
+    }
+
+    fn prune_idle_refreshes_sync(&self) -> usize {
+        Self::prune_idle_refreshes_locked(
+            &mut self.refreshes.lock(),
+            Instant::now(),
+            self.refresh_record_idle_ttl,
+        )
     }
 
     /// Spawns a background task that periodically executes drift-free TTL pruning.
@@ -599,6 +638,7 @@ impl OAuthStateStore {
                     }
                     _ = interval.tick() => {
                         store.prune_expired_sync();
+                        store.prune_idle_refreshes_sync();
                     }
                 }
             }
@@ -992,5 +1032,43 @@ mod tests {
                 RefreshAcquire::Acquired(_) => panic!("a waiter acquired a duplicate lease"),
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_completed_refresh_records_are_evicted_at_capacity() {
+        let mut store = OAuthStateStore::with_refresh_capacity(DEFAULT_STATE_TTL, 1);
+        store.refresh_record_idle_ttl = Duration::from_secs(1);
+
+        let first = match store.acquire_refresh("session-one", 0).await.unwrap() {
+            RefreshAcquire::Acquired(lease) => lease,
+            RefreshAcquire::Current(_) => panic!("a new session must acquire a lease"),
+        };
+        store.fail_refresh(first).await.unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        assert!(matches!(
+            store.acquire_refresh("session-two", 0).await.unwrap(),
+            RefreshAcquire::Acquired(_)
+        ));
+        let refreshes = store.refreshes.lock();
+        assert!(!refreshes.contains_key("session-one"));
+        assert!(refreshes.contains_key("session-two"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_pruning_never_evicts_an_in_flight_refresh() {
+        let mut store = OAuthStateStore::with_refresh_capacity(DEFAULT_STATE_TTL, 1);
+        store.refresh_record_idle_ttl = Duration::from_secs(1);
+        assert!(matches!(
+            store.acquire_refresh("session-one", 0).await.unwrap(),
+            RefreshAcquire::Acquired(_)
+        ));
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        assert!(matches!(
+            store.acquire_refresh("session-two", 0).await,
+            Err(StoreError::RefreshCapacity)
+        ));
+        assert!(store.refreshes.lock()["session-one"].in_flight.is_some());
     }
 }

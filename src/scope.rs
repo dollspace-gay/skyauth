@@ -266,6 +266,7 @@ impl PermissionResource {
     }
 }
 
+/// Parses percent-encoded scope parameters into a duplicate-aware map.
 fn parse_parameters(query: Option<&str>) -> Result<BTreeMap<String, Vec<String>>, ScopeError> {
     let mut parameters = BTreeMap::<String, Vec<String>>::new();
     let Some(query) = query else {
@@ -292,6 +293,7 @@ fn parse_parameters(query: Option<&str>) -> Result<BTreeMap<String, Vec<String>>
     Ok(parameters)
 }
 
+/// Decodes one percent-encoded ASCII scope component.
 fn decode_component(value: &str) -> Result<String, ScopeError> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -325,6 +327,7 @@ const fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+/// Rejects non-ASCII, control, and whitespace bytes in a raw scope item.
 fn validate_raw_ascii(value: &str) -> Result<(), ScopeError> {
     if value.is_empty() || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte)) {
         Err(ScopeError::InvalidEncoding)
@@ -333,6 +336,7 @@ fn validate_raw_ascii(value: &str) -> Result<(), ScopeError> {
     }
 }
 
+/// Validates NSID parameters with the profile's permitted wildcard forms.
 fn validate_nsid_or_wildcards(values: &[String]) -> Result<(), ScopeError> {
     if values
         .iter()
@@ -344,10 +348,31 @@ fn validate_nsid_or_wildcards(values: &[String]) -> Result<(), ScopeError> {
     }
 }
 
+/// Checks the complete AT Protocol NSID syntax used by permission scopes.
 fn valid_nsid(value: &str) -> bool {
-    value.len() <= 317
-        && value.split('.').count() >= 3
-        && value.split('.').all(|part| {
+    if !value.is_ascii() || value.len() > 317 {
+        return false;
+    }
+    let segments = value.split('.').collect::<Vec<_>>();
+    if segments.len() < 3 {
+        return false;
+    }
+    let Some((name, authority)) = segments.split_last() else {
+        return false;
+    };
+    let authority_length = authority
+        .iter()
+        .map(|segment| segment.len())
+        .sum::<usize>()
+        .saturating_add(authority.len().saturating_sub(1));
+    authority_length <= 253
+        && authority.first().is_some_and(|segment| {
+            segment
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| !byte.is_ascii_digit())
+        })
+        && authority.iter().all(|part| {
             !part.is_empty()
                 && part.len() <= 63
                 && part
@@ -356,8 +381,13 @@ fn valid_nsid(value: &str) -> bool {
                 && !part.starts_with('-')
                 && !part.ends_with('-')
         })
+        && !name.is_empty()
+        && name.len() <= 63
+        && name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
+/// Checks a DID URL service reference used by account permissions.
 fn valid_did_service_reference(value: &str) -> bool {
     let Some((did, fragment)) = value.split_once('#') else {
         return false;
@@ -368,6 +398,7 @@ fn valid_did_service_reference(value: &str) -> bool {
         && did.len() > 8
 }
 
+/// Checks an exact or subtype-wildcard MIME pattern.
 fn valid_mime_pattern(value: &str) -> bool {
     let Some((kind, subtype)) = value.split_once('/') else {
         return false;
@@ -387,6 +418,7 @@ const fn valid_mime_byte(byte: u8) -> bool {
         )
 }
 
+/// Extracts exactly one value for a required parameter.
 fn exactly_one<'a>(
     parameters: &'a BTreeMap<String, Vec<String>>,
     name: &'static str,
@@ -398,6 +430,7 @@ fn exactly_one<'a>(
     }
 }
 
+/// Validates a required multi-valued parameter with a supplied predicate.
 fn validate_many(
     parameters: &BTreeMap<String, Vec<String>>,
     name: &'static str,
@@ -414,6 +447,7 @@ fn validate_many(
     }
 }
 
+/// Validates an optional parameter that may appear at most once.
 fn validate_single_optional(
     parameters: &BTreeMap<String, Vec<String>>,
     name: &'static str,
@@ -465,5 +499,20 @@ mod tests {
         assert!(granted.is_subset_of(&requested));
         assert!(!requested.is_subset_of(&granted));
         assert_eq!(granted.as_str(), "atproto repo:app.example.post");
+    }
+
+    #[test]
+    fn rejects_invalid_nsid_authority_and_name_segments() {
+        for scope in [
+            "atproto repo:com.example.3",
+            "atproto repo:com.example.foo-bar",
+            "atproto repo:1.example.foo",
+        ] {
+            assert!(
+                ScopeSet::parse(scope).is_err(),
+                "accepted invalid scope: {scope}"
+            );
+        }
+        assert!(ScopeSet::parse("atproto repo:com.example.fooBar2").is_ok());
     }
 }

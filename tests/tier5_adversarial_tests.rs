@@ -18,8 +18,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+#[cfg(feature = "test-export")]
 use p256::ecdsa::SigningKey;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
+#[cfg(feature = "test-export")]
 use p256::pkcs8::DecodePrivateKey;
 use proptest::prelude::*;
 
@@ -28,7 +30,7 @@ use skyauth::crypto::{
     verify_p256_raw, verifying_key_from_coordinates, verifying_key_to_coordinates,
 };
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier, JwkEc};
-use skyauth::error::{CryptoError, DPoPError, IdentityError, PkceError};
+use skyauth::error::{CryptoError, DPoPError, DiscoveryError, IdentityError, PkceError, SsrfError};
 use skyauth::identity::{
     normalize_handle, validate_did_syntax, DidDocument, DidMethod, DidService, IdentityResolver,
 };
@@ -37,6 +39,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Helper to craft an arbitrary signed DPoP proof with exact claim overrides for adversarial testing.
+#[cfg(feature = "test-export")]
 fn craft_custom_proof(
     key: &DPoPKey,
     htm: &str,
@@ -47,7 +50,7 @@ fn craft_custom_proof(
     ath: Option<&str>,
 ) -> String {
     let pem = key
-        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_test_signing())
         .unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&pem).unwrap();
 
@@ -91,9 +94,10 @@ fn craft_custom_proof(
 }
 
 /// Helper to sign an arbitrary JSON payload with a given key.
+#[cfg(feature = "test-export")]
 fn sign_raw_json(key: &DPoPKey, header: &serde_json::Value, payload: &serde_json::Value) -> String {
     let pem = key
-        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_test_signing())
         .unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&pem).unwrap();
 
@@ -306,6 +310,7 @@ fn test_pkce_challenge_mismatch_and_tampering() {
 // 2. DPOP PROOF TAMPERING & CRYPTOGRAPHIC ADVERSARIAL CHALLENGES
 // =========================================================================
 
+#[cfg(feature = "test-export")]
 #[test]
 fn test_dpop_header_typ_tampering() {
     let key = DPoPKey::generate();
@@ -386,6 +391,7 @@ fn test_dpop_header_typ_tampering() {
     assert!(matches!(res, Err(DPoPError::InvalidHeaderTyp(_))));
 }
 
+#[cfg(feature = "test-export")]
 #[test]
 fn test_dpop_header_unsupported_alg_tampering() {
     let key = DPoPKey::generate();
@@ -420,6 +426,7 @@ fn test_dpop_header_unsupported_alg_tampering() {
     }
 }
 
+#[cfg(feature = "test-export")]
 #[test]
 fn test_dpop_header_jwk_tampering_and_private_key_leak() {
     let key = DPoPKey::generate();
@@ -500,6 +507,7 @@ fn test_dpop_header_jwk_tampering_and_private_key_leak() {
     }
 }
 
+#[cfg(feature = "test-export")]
 #[test]
 fn test_dpop_key_substitution_attack_fails() {
     let key_alice = DPoPKey::generate();
@@ -523,7 +531,7 @@ fn test_dpop_key_substitution_attack_fails() {
 
     // Mallory signs with Mallory's private key
     let mallory_pem = key_mallory
-        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_test_signing())
         .unwrap();
     let mallory_signing_key = SigningKey::from_pkcs8_pem(&mallory_pem).unwrap();
     let sig_bytes = sign_p256_raw(&mallory_signing_key, signing_input.as_bytes()).unwrap();
@@ -611,6 +619,7 @@ fn test_dpop_signature_length_extremes_and_der_rejection() {
     }
 }
 
+#[cfg(feature = "test-export")]
 #[test]
 fn test_dpop_payload_jti_validation() {
     let key = DPoPKey::generate();
@@ -850,6 +859,7 @@ fn test_dpop_nonce_and_ath_strict_validation() {
     assert!(matches!(res_missing_ath, Err(DPoPError::MissingAth)));
 }
 
+#[cfg(feature = "test-export")]
 #[test]
 fn test_dpop_temporal_bounds_and_clock_skew() {
     let key = DPoPKey::generate();
@@ -2245,22 +2255,23 @@ fn test_adv_did_document_conflicting_handle_backlinks() {
         .verify_handle_bidirectional("alice.bsky.social")
         .is_ok());
 
-    // 5. Case-insensitivity in both handle query and alsoKnownAs entry
+    // 5. The query is normalized, but DID-document aliases must already be canonical.
     let doc_uppercase_aka = DidDocument {
         id: "did:plc:alice111111111111111111".to_string(),
         also_known_as: vec!["at://ALICE.BSKY.SOCIAL".to_string()],
         verification_method: vec![],
         service: vec![],
     };
-    assert!(doc_uppercase_aka
-        .verify_handle_bidirectional("alice.bsky.social")
-        .is_ok());
-    assert!(doc_uppercase_aka
-        .verify_handle_bidirectional("ALICE.BSKY.SOCIAL")
-        .is_ok());
-    assert!(doc_uppercase_aka
-        .verify_handle_bidirectional("@alice.bsky.social")
-        .is_ok());
+    for query in [
+        "alice.bsky.social",
+        "ALICE.BSKY.SOCIAL",
+        "@alice.bsky.social",
+    ] {
+        assert!(matches!(
+            doc_uppercase_aka.verify_handle_bidirectional(query),
+            Err(IdentityError::HandleDidMismatch(_))
+        ));
+    }
 }
 
 #[test]
@@ -2373,9 +2384,18 @@ fn test_adv_did_service_endpoint_tampering() {
                 service_endpoint: bad_url.to_string(),
             }],
         };
+        let error = doc_bad_scheme.extract_pds_endpoint();
+        let expected = if matches!(bad_url, "ftp://pds.example.com" | "ws://pds.example.com") {
+            matches!(
+                error,
+                Err(IdentityError::Ssrf(SsrfError::InsecureScheme(_)))
+            )
+        } else {
+            matches!(error, Err(IdentityError::Ssrf(SsrfError::InvalidUrl(_))))
+        };
         assert!(
-            doc_bad_scheme.extract_pds_endpoint().is_err(),
-            "PDS endpoint with scheme '{bad_url}' should fail"
+            expected,
+            "unexpected rejection for PDS endpoint '{bad_url}'"
         );
     }
 
@@ -2406,7 +2426,10 @@ fn test_adv_did_service_endpoint_tampering() {
             service_endpoint: "https://pds.example.com///".to_string(),
         }],
     };
-    assert!(doc_slashes.extract_pds_endpoint().is_err());
+    assert!(matches!(
+        doc_slashes.extract_pds_endpoint(),
+        Err(IdentityError::InvalidPdsEndpoint(_))
+    ));
 
     // 7. Full URI fragment id (did:plc:...#atproto_pds)
     let doc_full_fragment = DidDocument {
@@ -2680,7 +2703,7 @@ use skyauth::discovery::{
     fetch_auth_server_metadata, fetch_protected_resource_metadata, AuthorizationServerMetadata,
     ProtectedResourceMetadata,
 };
-use skyauth::error::{AtprotoOAuthError, DiscoveryError, TokenError};
+use skyauth::error::{AtprotoOAuthError, TokenError};
 use skyauth::par::{build_authorization_url, execute_par_request, ParParameters};
 use skyauth::session::OAuthSession;
 use skyauth::ssrf::{is_blocked_hostname, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
@@ -3137,7 +3160,10 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         .await;
 
     let fallback_res = fetch_auth_server_metadata(&ssrf_filter, &base_uri2).await;
-    assert!(fallback_res.is_err());
+    assert!(matches!(
+        fallback_res,
+        Err(DiscoveryError::AuthServerDiscoveryFailed(_))
+    ));
 
     // 3. Scenario 3: PAR execution with 1-hop use_dpop_nonce auto-retry
     let mock_server3 = MockServer::start().await;

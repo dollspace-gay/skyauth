@@ -522,12 +522,7 @@ async fn test_redirect_to_private_ip_blocked() {
 
     let res = filter.safe_get(&start_url, 1024 * 1024).await;
     assert!(
-        matches!(
-            res,
-            Err(SsrfError::BlockedIp(_))
-                | Err(SsrfError::InsecureScheme(_))
-                | Err(SsrfError::CrossOriginRedirect)
-        ),
+        matches!(res, Err(SsrfError::CrossOriginRedirect)),
         "Redirect to private IP 10.0.0.1 should be blocked"
     );
 }
@@ -551,12 +546,7 @@ async fn test_redirect_to_cloud_metadata_blocked() {
 
     let res = filter.safe_get(&start_url, 1024 * 1024).await;
     assert!(
-        matches!(
-            res,
-            Err(SsrfError::BlockedIp(_))
-                | Err(SsrfError::InsecureScheme(_))
-                | Err(SsrfError::CrossOriginRedirect)
-        ),
+        matches!(res, Err(SsrfError::CrossOriginRedirect)),
         "Redirect to metadata IP 169.254.169.254 should be blocked"
     );
 }

@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use serde_json::json;
-use wiremock::matchers::{header_exists, method, path};
+use wiremock::matchers::{body_string_contains, header_exists, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata, StoredStateEntry};
-use skyauth::crypto::constant_time_eq;
+use skyauth::crypto::{base64url_decode, constant_time_eq, jwk_thumbprint_ec_p256};
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
 use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, SsrfError, TokenError};
 use skyauth::identity::IdentityResolverBuilder;
@@ -62,14 +62,31 @@ fn test_state_entry(
     scopes: &str,
     dpop_key: DPoPKey,
 ) -> StoredStateEntry {
+    test_state_entry_for_identity(
+        state,
+        issuer,
+        token_endpoint,
+        scopes,
+        dpop_key,
+        TEST_ALICE_DID,
+        TEST_ALICE_HANDLE,
+    )
+}
+
+fn test_state_entry_for_identity(
+    state: &str,
+    issuer: &str,
+    token_endpoint: &str,
+    scopes: &str,
+    dpop_key: DPoPKey,
+    did: &str,
+    handle: &str,
+) -> StoredStateEntry {
     StoredStateEntry::builder(state, dpop_key)
         .client_id(TEST_CLIENT_ID)
         .code_verifier(RFC7636_VERIFIER)
         .issuer(issuer)
-        .identity(
-            Some(TEST_ALICE_DID.to_string()),
-            Some(TEST_ALICE_HANDLE.to_string()),
-        )
+        .identity(Some(did.to_string()), Some(handle.to_string()))
         .redirect_uri(TEST_REDIRECT_URI)
         .pds_endpoint("https://pds.example.com")
         .token_endpoint(token_endpoint)
@@ -500,7 +517,7 @@ async fn test_refresh_token_rotation_concurrent_race() {
 }
 
 #[tokio::test]
-async fn test_refresh_token_omitted_by_server_is_rejected() {
+async fn test_refresh_token_omitted_by_server_preserves_existing_token() {
     let auth_server = MockServer::start().await;
 
     // Server returns access_token without a new refresh_token
@@ -543,23 +560,10 @@ async fn test_refresh_token_omitted_by_server_is_rejected() {
         .build()
         .unwrap();
 
-    let result = client.refresh_session(&mut session).await;
-    assert!(matches!(
-        result,
-        Err(AtprotoOAuthError::Token(TokenError::MissingField(
-            "refresh_token"
-        )))
-    ));
-    assert_eq!(session.expose_access_token(), "at_old");
+    client.refresh_session(&mut session).await.unwrap();
+    assert_eq!(session.expose_access_token(), "at_new_without_rt");
     assert_eq!(session.expose_refresh_token(), Some("rt_initial"));
-
-    let next_err = client.refresh_session(&mut session).await;
-    assert!(matches!(
-        next_err,
-        Err(AtprotoOAuthError::Store(
-            skyauth::error::StoreError::RefreshInDoubt
-        ))
-    ));
+    assert_eq!(session.generation(), 1);
 }
 
 // ============================================================================
@@ -614,6 +618,25 @@ async fn test_concurrent_independent_logins_20_actors() {
     }
 
     assert_eq!(state_tokens.len(), actor_count);
+
+    let requests = env.auth_server.server.received_requests().await.unwrap();
+    let thumbprints = requests
+        .iter()
+        .filter(|request| request.url.path() == "/oauth/par")
+        .map(|request| {
+            let proof = request.headers.get("dpop").unwrap().to_str().unwrap();
+            let header_segment = proof.split('.').next().unwrap();
+            let header: serde_json::Value =
+                serde_json::from_slice(&base64url_decode(header_segment).unwrap()).unwrap();
+            let jwk = &header["jwk"];
+            jwk_thumbprint_ec_p256(jwk["x"].as_str().unwrap(), jwk["y"].as_str().unwrap())
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        thumbprints.len(),
+        actor_count,
+        "every concurrent authorization transaction needs a distinct DPoP key"
+    );
 }
 
 #[tokio::test]
@@ -705,7 +728,7 @@ async fn test_concurrent_authorization_code_single_use_race() {
 }
 
 #[tokio::test]
-async fn test_callback_state_swapping_under_concurrency() {
+async fn test_callback_with_unknown_state_is_rejected() {
     let client = AtprotoOAuthClient::builder()
         .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
@@ -717,8 +740,94 @@ async fn test_callback_state_swapping_under_concurrency() {
         .with_iss("https://auth.example.com");
     assert!(matches!(
         client.handle_callback(&callback).await,
-        Err(AtprotoOAuthError::Store(_))
+        Err(AtprotoOAuthError::Store(
+            skyauth::error::StoreError::StateNotFound
+        ))
     ));
+}
+
+#[tokio::test]
+async fn test_cross_user_code_and_state_swap_is_rejected() {
+    let auth_server = MockServer::start().await;
+    let issuer = auth_server.uri();
+    let token_endpoint = format!("{issuer}/oauth/token");
+    for (code, did, token) in [
+        ("alice-code", TEST_ALICE_DID, "alice-access"),
+        ("bob-code", "did:plc:bob987654321", "bob-access"),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains(format!("code={code}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", format!("{code}-nonce"))
+                    .set_body_json(json!({
+                        "access_token": token,
+                        "refresh_token": format!("{token}-refresh"),
+                        "token_type": "DPoP",
+                        "expires_in": 300,
+                        "scope": "atproto",
+                        "sub": did
+                    })),
+            )
+            .mount(&auth_server)
+            .await;
+    }
+
+    let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+    let alice = test_state_entry_for_identity(
+        "alice-state-cross-user",
+        &issuer,
+        &token_endpoint,
+        "atproto",
+        DPoPKey::generate(),
+        TEST_ALICE_DID,
+        TEST_ALICE_HANDLE,
+    );
+    let bob = test_state_entry_for_identity(
+        "bob-state-cross-user",
+        &issuer,
+        &token_endpoint,
+        "atproto",
+        DPoPKey::generate(),
+        "did:plc:bob987654321",
+        "bob.example.com",
+    );
+    client
+        .state_store()
+        .insert_state(
+            "alice-state-cross-user".to_string(),
+            alice,
+            DEFAULT_STATE_TTL,
+        )
+        .await
+        .unwrap();
+    client
+        .state_store()
+        .insert_state("bob-state-cross-user".to_string(), bob, DEFAULT_STATE_TTL)
+        .await
+        .unwrap();
+
+    let swapped = client
+        .handle_callback(
+            &CallbackParams::new("bob-code", "alice-state-cross-user").with_iss(&issuer),
+        )
+        .await;
+    assert!(matches!(
+        swapped,
+        Err(AtprotoOAuthError::Token(TokenError::SubMismatch { .. }))
+    ));
+    let bob_session = client
+        .handle_callback(&CallbackParams::new("bob-code", "bob-state-cross-user").with_iss(&issuer))
+        .await
+        .unwrap();
+    assert_eq!(bob_session.sub(), "did:plc:bob987654321");
 }
 
 #[tokio::test]

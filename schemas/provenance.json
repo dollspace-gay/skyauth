@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "retrieved_at": "2026-08-29T21:35:00Z",
+  "retrieved_at": "2026-08-30T05:16:14Z",
   "artifacts": [
     {
       "local_path": "lexicons/com/atproto/identity/resolveHandle.json",
@@ -70,11 +70,11 @@
     },
     {
       "local_path": "schemas/atproto_client_metadata.json",
-      "kind": "derived",
+      "kind": "live-derived",
       "source_url": "https://atproto.com/specs/oauth#clients",
-      "upstream_commit": "Live AT Protocol specification",
-      "upstream_date": "2026-08-29",
-      "upstream_sha256": null,
+      "upstream_commit": "live-page-sha256",
+      "upstream_date": "2026-08-30",
+      "upstream_sha256": "6abf24c39c462628e91a8c7f2cae4239f967196eb8e6fb8df7ca9dcf8ede9914",
       "local_sha256": "4c92d4f1cef4f7f460e67638ae87c3893bfcc89ea7a11b34380b6ef82e9f7e70",
       "retrieval": "Maintainer review of the live authoritative specification",
       "transformation": "Project-authored JSON Schema derived from the Clients section"

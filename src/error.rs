@@ -20,6 +20,7 @@ pub(crate) fn sanitize_oauth_error_code(value: Option<&str>, fallback: &'static 
             | "temporarily_unavailable"
             | "unauthorized_client"
             | "unsupported_grant_type"
+            | "unsupported_response_type"
             | "use_dpop_nonce"),
         ) => code.to_string(),
         _ => fallback.to_string(),

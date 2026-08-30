@@ -34,9 +34,8 @@ fn state_lifecycle_is_single_use() {
     let expired: bool = kani::any();
     let consumed = state_take_accepts(present, expired);
     assert_eq!(consumed, present && !expired);
-    if consumed {
-        assert!(!state_take_accepts(false, false));
-    }
+    let present_after_consumption = present && !consumed;
+    assert!(!consumed || !state_take_accepts(present_after_consumption, false));
     kani::cover!(consumed, "live consumption is reachable");
     kani::cover!(!consumed && !present, "absent rejection is reachable");
     kani::cover!(!consumed && expired, "expired rejection is reachable");
@@ -190,23 +189,21 @@ fn dpop_and_scope_acceptance_require_all_inputs() {
 
 /// Proves replay and nonce transition behavior for all bounded state combinations.
 ///
-/// Domain: all Boolean transition inputs and a symbolic token-context byte. Unwind bound: 1.
+/// Domain: all Boolean replay and nonce transition inputs. Unwind bound: 1.
 #[kani::proof]
 #[kani::unwind(1)]
 fn replay_and_nonce_transitions_are_single_use() {
-    let _token_context: u8 = kani::any();
+    let already_live: bool = kani::any();
     let capacity_available: bool = kani::any();
-    let first = replay_insert_accepts(false, capacity_available);
-    if first {
-        assert!(!replay_insert_accepts(true, capacity_available));
-    }
-    kani::cover!(first, "first replay insertion is reachable");
+    let replay_accepted = replay_insert_accepts(already_live, capacity_available);
+    assert_eq!(replay_accepted, !already_live && capacity_available);
+    kani::cover!(replay_accepted, "first replay insertion is reachable");
     kani::cover!(
-        !replay_insert_accepts(true, true),
+        already_live && !replay_accepted,
         "duplicate replay rejection is reachable"
     );
     kani::cover!(
-        !replay_insert_accepts(false, false),
+        !already_live && !capacity_available && !replay_accepted,
         "capacity rejection is reachable"
     );
 

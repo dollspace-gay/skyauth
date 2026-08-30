@@ -23,7 +23,8 @@ Checked-in files and `schemas/.checksums.sha256` are local release inputs.
 ## Formal tools
 
 `bash scripts/verify_formal.sh` invokes Kani 0.67.0 and Verus
-`0.2026.08.09.92f466f`. It writes logs under `target/proof-logs`, checks required covers, and requires
+`0.2026.08.09.92f466f`. It writes logs under `target/proof-logs` by default (CI overrides this with
+`PROOF_LOG_DIR=proof-artifacts`), checks required covers, and requires
 deliberately false proof mutations to fail. See `docs/formal-verification.md` for claims and bounds.
 
 ## Reproducibility

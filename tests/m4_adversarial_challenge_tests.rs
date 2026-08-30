@@ -34,7 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use http::Response;
 #[cfg(any(feature = "axum", feature = "tower"))]
 use http::{header, Request, StatusCode};
-#[cfg(feature = "tower")]
+#[cfg(all(feature = "tower", feature = "test-export"))]
 use p256::pkcs8::DecodePrivateKey;
 #[cfg(any(feature = "actix", feature = "axum"))]
 use skyauth::client::{AuthorizationRequest, OAuthClientMetadata};
@@ -281,6 +281,8 @@ mod tower_adversarial_tests {
     #[tokio::test]
     async fn test_tower_malformed_jwt_variations() {
         let auth = TestTokenAuthority::new();
+        let key = DPoPKey::generate();
+        let access_token = auth.issue(&key.jwk_thumbprint());
         let verifier = Arc::new(DPoPVerifier::new());
         let layer = auth.layer(verifier);
         let mut service = layer.layer(MockService);
@@ -299,7 +301,7 @@ mod tower_adversarial_tests {
             let req = Request::builder()
                 .method("GET")
                 .uri("https://pds.example.com/xrpc/app.bsky.actor.getProfile")
-                .header(header::AUTHORIZATION, "DPoP token_123")
+                .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
                 .header("DPoP", malformed)
                 .body(())
                 .unwrap();
@@ -435,6 +437,7 @@ mod tower_adversarial_tests {
         assert!(www_auth.contains("invalid_dpop_proof"));
     }
 
+    #[cfg(feature = "test-export")]
     #[tokio::test]
     async fn test_tower_expired_dpop_proof_with_exp_claim_verification() {
         let key = DPoPKey::generate();
@@ -463,10 +466,8 @@ mod tower_adversarial_tests {
         let signing_input = format!("{h_b64}.{p_b64}");
         let sig_bytes = skyauth::crypto::sign_p256_raw(
             &p256::ecdsa::SigningKey::from_pkcs8_pem(
-                &key.export_pkcs8_pem(
-                    skyauth::session::SecretExportPermit::for_encrypted_persistence(),
-                )
-                .unwrap(),
+                &key.export_pkcs8_pem(skyauth::session::SecretExportPermit::for_test_signing())
+                    .unwrap(),
             )
             .unwrap(),
             signing_input.as_bytes(),
@@ -491,6 +492,7 @@ mod tower_adversarial_tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "test-export")]
     #[tokio::test]
     async fn test_tower_future_dpop_proof_clock_skew_verification() {
         let key = DPoPKey::generate();
@@ -523,10 +525,8 @@ mod tower_adversarial_tests {
         let signing_input = format!("{h_b64}.{p_b64}");
         let sig_bytes = skyauth::crypto::sign_p256_raw(
             &p256::ecdsa::SigningKey::from_pkcs8_pem(
-                &key.export_pkcs8_pem(
-                    skyauth::session::SecretExportPermit::for_encrypted_persistence(),
-                )
-                .unwrap(),
+                &key.export_pkcs8_pem(skyauth::session::SecretExportPermit::for_test_signing())
+                    .unwrap(),
             )
             .unwrap(),
             signing_input.as_bytes(),

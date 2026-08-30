@@ -62,6 +62,8 @@ axum = ["dep:axum"]
 actix = ["dep:actix-web"]
 tower = ["dep:tower", "dep:tower-service", "dep:tower-layer"]
 proof-mutations = []
+# Internal-only authority used by adversarial integration tests that sign malformed proofs.
+test-export = []
 
 [package.metadata.kani.flags]
 default-unwind = "5"

@@ -12,8 +12,30 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::CallbackParams;
+#[cfg(any(feature = "actix", feature = "axum"))]
+use crate::client::OAuthClientMetadata;
 use crate::error::{sanitize_oauth_error_code, IntegrationError};
 use crate::session::OAuthSession;
+
+#[cfg(any(feature = "actix", feature = "axum"))]
+fn client_metadata_payload(metadata: &OAuthClientMetadata) -> serde_json::Value {
+    let mut grant_types = vec!["authorization_code"];
+    if metadata.refresh_tokens() {
+        grant_types.push("refresh_token");
+    }
+    serde_json::json!({
+        "client_id": metadata.client_id(),
+        "client_name": metadata.client_name(),
+        "client_uri": metadata.client_id(),
+        "application_type": metadata.application_type().as_str(),
+        "redirect_uris": [metadata.redirect_uri()],
+        "grant_types": grant_types,
+        "response_types": ["code"],
+        "scope": metadata.scope(),
+        "token_endpoint_auth_method": "none",
+        "dpop_bound_access_tokens": true
+    })
+}
 
 #[cfg(feature = "axum")]
 pub mod axum;
@@ -225,5 +247,21 @@ impl OAuthSessionExtension {
             user,
             session: Some(session),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_unsupported_response_type_callback_error() {
+        let query = OAuthCallbackQuery::new_error("unsupported_response_type", None);
+        assert!(matches!(
+            query.to_callback_params(),
+            Err(IntegrationError::OAuthError { error, .. })
+                if error == "unsupported_response_type"
+        ));
     }
 }

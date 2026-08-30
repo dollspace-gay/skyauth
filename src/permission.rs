@@ -143,11 +143,27 @@ struct CachedPermissionSet {
     inserted_secs: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PermissionCacheKey {
+    nsid: String,
+    audience: Option<Vec<String>>,
+}
+
+impl PermissionCacheKey {
+    /// Binds one permission-set NSID to its inherited audience.
+    fn new(nsid: &str, audience: Option<&[String]>) -> Self {
+        Self {
+            nsid: nsid.to_string(),
+            audience: audience.map(<[String]>::to_vec),
+        }
+    }
+}
+
 /// Bounded permission-set cache with independent stale and expiration lifetimes.
 #[derive(Debug)]
 pub struct PermissionSetCache<R> {
     resolver: Arc<R>,
-    entries: RwLock<HashMap<String, CachedPermissionSet>>,
+    entries: RwLock<HashMap<PermissionCacheKey, CachedPermissionSet>>,
     stale_after: Duration,
     expire_after: Duration,
     capacity: usize,
@@ -185,6 +201,7 @@ where
         }
     }
 
+    /// Resolves, authenticates, parses, and caches one permission-set document.
     async fn resolve_one(
         &self,
         include: &PermissionScope,
@@ -192,8 +209,10 @@ where
         let nsid = include
             .positional()
             .ok_or(ScopeError::InvalidPermissionSet)?;
+        let audience = include.parameter("aud");
+        let cache_key = PermissionCacheKey::new(nsid, audience);
         let now_secs = unix_seconds(SystemTime::now());
-        let cached = self.entries.read().get(nsid).cloned();
+        let cached = self.entries.read().get(&cache_key).cloned();
         if let Some(cached) = cached.as_ref() {
             let age = now_secs.saturating_sub(cached.inserted_secs);
             if age < self.stale_after.as_secs() {
@@ -203,13 +222,13 @@ where
 
         match self.resolver.resolve_authenticated(nsid).await {
             Ok(record) => {
-                let value = parse_permission_set(nsid, include.parameter("aud"), record)?;
+                let value = parse_permission_set(nsid, audience, record)?;
                 let mut entries = self.entries.write();
-                if !entries.contains_key(nsid) && entries.len() >= self.capacity {
+                if !entries.contains_key(&cache_key) && entries.len() >= self.capacity {
                     return Err(ScopeError::CacheCapacity);
                 }
                 entries.insert(
-                    nsid.to_string(),
+                    cache_key,
                     CachedPermissionSet {
                         value: value.clone(),
                         inserted_secs: now_secs,
@@ -267,6 +286,7 @@ struct LexiconDocument {
     defs: BTreeMap<String, serde_json::Value>,
 }
 
+/// Parses an authenticated permission-set lexicon into enforced declarations.
 fn parse_permission_set(
     requested_nsid: &str,
     include_audience: Option<&[String]>,
@@ -315,6 +335,7 @@ fn parse_permission_set(
     })
 }
 
+/// Dispatches one permission declaration to its resource-specific parser.
 fn parse_declaration(
     set_nsid: &str,
     inherited_audience: Option<&str>,
@@ -331,6 +352,7 @@ fn parse_declaration(
     }
 }
 
+/// Parses and namespace-checks one repository permission declaration.
 fn parse_repo_declaration(
     set_nsid: &str,
     object: &serde_json::Map<String, serde_json::Value>,
@@ -365,6 +387,7 @@ fn parse_repo_declaration(
     PermissionScope::parse(&scope).ok()
 }
 
+/// Parses and namespace-checks one RPC permission declaration.
 fn parse_rpc_declaration(
     set_nsid: &str,
     inherited_audience: Option<&str>,
@@ -402,6 +425,7 @@ fn parse_rpc_declaration(
     PermissionScope::parse(&scope).ok()
 }
 
+/// Extracts a non-empty JSON string array without duplicates.
 fn unique_strings(value: &serde_json::Value) -> Option<Vec<String>> {
     let values = value.as_array()?;
     let mut seen = BTreeSet::new();
@@ -416,6 +440,7 @@ fn unique_strings(value: &serde_json::Value) -> Option<Vec<String>> {
     Some(output)
 }
 
+/// Checks that a declared resource remains inside its permission-set namespace.
 fn within_set_namespace(set_nsid: &str, resource_nsid: &str) -> bool {
     let Some((group, _)) = set_nsid.rsplit_once('.') else {
         return false;
@@ -425,6 +450,7 @@ fn within_set_namespace(set_nsid: &str, resource_nsid: &str) -> bool {
         .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
+/// Appends sorted permission parameters to a canonical scope string.
 fn append_parameters(output: &mut String, name: &str, values: &[String]) {
     for value in values {
         if !output.ends_with('?') {
@@ -436,6 +462,7 @@ fn append_parameters(output: &mut String, name: &str, values: &[String]) {
     }
 }
 
+/// Percent-encodes one canonical scope parameter component.
 fn encode_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -451,6 +478,7 @@ fn encode_component(value: &str) -> String {
     encoded
 }
 
+/// Converts system time to saturating seconds from the Unix epoch.
 fn unix_seconds(time: SystemTime) -> u64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
@@ -562,5 +590,30 @@ mod tests {
         .unwrap();
         assert!(!cache.resolve_scope_sets(&scopes).await.unwrap()[0].is_stale());
         assert!(cache.resolve_scope_sets(&scopes).await.unwrap()[0].is_stale());
+    }
+
+    #[tokio::test]
+    async fn cache_identity_includes_inherited_audience() {
+        let resolver = Arc::new(FixtureResolver::new(vec![Ok(record()), Ok(record())]));
+        let cache = PermissionSetCache::new(resolver);
+        let first = ScopeSet::parse(
+            "atproto include:app.example.authFull?aud=did:web:first.example.com%23svc_appview",
+        )
+        .unwrap();
+        let second = ScopeSet::parse(
+            "atproto include:app.example.authFull?aud=did:web:second.example.com%23svc_appview",
+        )
+        .unwrap();
+
+        let first_set = cache.resolve_scope_sets(&first).await.unwrap();
+        let second_set = cache.resolve_scope_sets(&second).await.unwrap();
+        assert_eq!(
+            first_set[0].permissions()[1].parameter("aud").unwrap(),
+            &["did:web:first.example.com#svc_appview".to_string()]
+        );
+        assert_eq!(
+            second_set[0].permissions()[1].parameter("aud").unwrap(),
+            &["did:web:second.example.com#svc_appview".to_string()]
+        );
     }
 }

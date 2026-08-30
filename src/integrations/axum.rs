@@ -14,7 +14,9 @@ use axum::response::Response;
 use axum::Json;
 use serde_json::json;
 
-use super::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+use super::{
+    client_metadata_payload, AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension,
+};
 use crate::client::{AuthorizationRequest, OAuthClientMetadata};
 use crate::error::IntegrationError;
 
@@ -92,25 +94,7 @@ where
 pub fn client_metadata_response(
     metadata: &OAuthClientMetadata,
 ) -> Result<Response, IntegrationError> {
-    let redirect_uris = vec![metadata.redirect_uri()];
-    let mut grant_types = vec!["authorization_code"];
-    if metadata.refresh_tokens() {
-        grant_types.push("refresh_token");
-    }
-    let response_types = vec!["code".to_string()];
-
-    let payload = json!({
-        "client_id": metadata.client_id(),
-        "client_name": metadata.client_name(),
-        "client_uri": metadata.client_id(),
-        "application_type": metadata.application_type().as_str(),
-        "redirect_uris": redirect_uris,
-        "grant_types": grant_types,
-        "response_types": response_types,
-        "scope": metadata.scope(),
-        "token_endpoint_auth_method": "none",
-        "dpop_bound_access_tokens": true
-    });
+    let payload = client_metadata_payload(metadata);
 
     let json_bytes = serde_json::to_vec(&payload).map_err(|e| {
         IntegrationError::Internal(format!("Failed to serialize client metadata: {e}"))

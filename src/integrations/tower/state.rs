@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +12,93 @@ use crate::error::DPoPError;
 use crate::policy::{nonce_accepts, replay_insert_accepts};
 
 const STATE_SHARDS: usize = 64;
+const PRUNE_BATCH: usize = 32;
+
+#[derive(Debug)]
+struct ExpiringShard<K, V> {
+    entries: HashMap<K, TimedEntry<V>>,
+    expirations: BinaryHeap<Reverse<Expiry<K>>>,
+    next_sequence: u128,
+}
+
+#[derive(Debug)]
+struct TimedEntry<V> {
+    value: V,
+    sequence: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Expiry<K> {
+    expires_at: u64,
+    sequence: u128,
+    key: K,
+}
+
+impl<K, V> Default for ExpiringShard<K, V> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            expirations: BinaryHeap::new(),
+            next_sequence: 0,
+        }
+    }
+}
+
+impl<K, V> ExpiringShard<K, V>
+where
+    K: Clone + Eq + Hash + Ord,
+{
+    /// Removes at most `limit` elapsed heap records and their live entries.
+    fn prune_expired(&mut self, now: u64, limit: usize) {
+        let mut examined = 0usize;
+        while examined < limit {
+            let Some(Reverse(next)) = self.expirations.peek() else {
+                break;
+            };
+            if next.expires_at > now {
+                break;
+            }
+            let Some(Reverse(expired)) = self.expirations.pop() else {
+                break;
+            };
+            examined = examined.saturating_add(1);
+            let remove = self
+                .entries
+                .get(&expired.key)
+                .is_some_and(|entry| entry.sequence == expired.sequence);
+            if remove {
+                self.entries.remove(&expired.key);
+            }
+        }
+    }
+
+    /// Inserts or replaces one value and indexes its expiration generation.
+    fn insert(&mut self, key: K, value: V, expires_at: u64) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.expirations.push(Reverse(Expiry {
+            expires_at,
+            sequence,
+            key: key.clone(),
+        }));
+        self.entries.insert(key, TimedEntry { value, sequence });
+    }
+
+    /// Returns the live value stored for a key.
+    fn get(&self, key: &K) -> Option<&V> {
+        self.entries.get(key).map(|entry| &entry.value)
+    }
+
+    /// Reports whether a key currently has a live map entry.
+    fn contains_key(&self, key: &K) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    /// Returns the number of live map entries.
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 /// Atomic storage for accepted DPoP proof identifiers.
 pub trait DPoPReplayStore: std::fmt::Debug + Send + Sync + 'static {
@@ -32,7 +121,7 @@ pub trait DPoPReplayStore: std::fmt::Debug + Send + Sync + 'static {
 /// Bounded, sharded in-memory DPoP replay store.
 #[derive(Debug, Clone)]
 pub struct InMemoryDPoPReplayStore {
-    shards: Arc<[Mutex<HashMap<ReplayKey, u64>>; STATE_SHARDS]>,
+    shards: Arc<[Mutex<ExpiringShard<ReplayKey, ()>>; STATE_SHARDS]>,
     shard_capacities: Arc<[usize; STATE_SHARDS]>,
 }
 
@@ -49,7 +138,9 @@ impl InMemoryDPoPReplayStore {
         let base = max_entries / STATE_SHARDS;
         let remainder = max_entries % STATE_SHARDS;
         Ok(Self {
-            shards: Arc::new(std::array::from_fn(|_| Mutex::new(HashMap::new()))),
+            shards: Arc::new(std::array::from_fn(
+                |_| Mutex::new(ExpiringShard::default()),
+            )),
             shard_capacities: Arc::new(std::array::from_fn(|index| {
                 base + usize::from(index < remainder)
             })),
@@ -70,16 +161,20 @@ impl DPoPReplayStore for InMemoryDPoPReplayStore {
         let key = ReplayKey::new(issuer, token_identifier, thumbprint, proof_identifier);
         let shard_index = shard_index(&key);
         let mut shard = self.shards[shard_index].lock();
-        shard.retain(|_, expiry| *expiry > now);
+        shard.prune_expired(now, PRUNE_BATCH);
         let already_live = shard.contains_key(&key);
-        let capacity_available = shard.len() < self.shard_capacities[shard_index];
+        let mut capacity_available = shard.len() < self.shard_capacities[shard_index];
+        if !already_live && !capacity_available {
+            shard.prune_expired(now, usize::MAX);
+            capacity_available = shard.len() < self.shard_capacities[shard_index];
+        }
         if !replay_insert_accepts(already_live, capacity_available) && already_live {
             return Err(DPoPError::ReplayDetected);
         }
         if !replay_insert_accepts(already_live, capacity_available) {
             return Err(DPoPError::ReplayStoreUnavailable);
         }
-        shard.insert(key, expires_at);
+        shard.insert(key, (), expires_at);
         Ok(())
     }
 }
@@ -114,7 +209,7 @@ pub trait DPoPNonceStore: std::fmt::Debug + Send + Sync + 'static {
 /// Bounded, sharded in-memory DPoP nonce store.
 #[derive(Debug, Clone)]
 pub struct InMemoryDPoPNonceStore {
-    shards: Arc<[Mutex<HashMap<NonceKey, NonceRecord>>; STATE_SHARDS]>,
+    shards: Arc<[Mutex<ExpiringShard<NonceKey, NonceRecord>>; STATE_SHARDS]>,
     shard_capacities: Arc<[usize; STATE_SHARDS]>,
     ttl: Duration,
 }
@@ -132,7 +227,9 @@ impl InMemoryDPoPNonceStore {
         let base = max_entries / STATE_SHARDS;
         let remainder = max_entries % STATE_SHARDS;
         Ok(Self {
-            shards: Arc::new(std::array::from_fn(|_| Mutex::new(HashMap::new()))),
+            shards: Arc::new(std::array::from_fn(
+                |_| Mutex::new(ExpiringShard::default()),
+            )),
             shard_capacities: Arc::new(std::array::from_fn(|index| {
                 base + usize::from(index < remainder)
             })),
@@ -154,12 +251,15 @@ impl DPoPNonceStore for InMemoryDPoPNonceStore {
         let key = NonceKey::new(issuer, token_identifier, thumbprint);
         let shard_index = shard_index(&key);
         let mut shard = self.shards[shard_index].lock();
-        shard.retain(|_, record| record.expires_at > now);
+        shard.prune_expired(now, PRUNE_BATCH);
 
-        let current = shard.get(&key);
-        let nonce_matches = current.is_some_and(|record| {
+        let current = shard.get(&key).cloned();
+        let nonce_matches = current.as_ref().is_some_and(|record| {
             presented_nonce.is_some_and(|presented| {
-                constant_time_eq(presented.as_bytes(), record.value.as_bytes())
+                constant_time_eq(presented.as_bytes(), record.current.as_bytes())
+                    || record.previous.as_ref().is_some_and(|previous| {
+                        constant_time_eq(presented.as_bytes(), previous.as_bytes())
+                    })
             })
         });
         let accepted = nonce_accepts(
@@ -168,27 +268,44 @@ impl DPoPNonceStore for InMemoryDPoPNonceStore {
             nonce_matches,
             require_initial_nonce,
         );
-        if !shard.contains_key(&key) && shard.len() >= self.shard_capacities[shard_index] {
-            return Err(DPoPError::NonceStoreUnavailable);
+        let existing = shard.contains_key(&key);
+        if !existing && shard.len() >= self.shard_capacities[shard_index] {
+            shard.prune_expired(now, usize::MAX);
+            if shard.len() >= self.shard_capacities[shard_index] {
+                return Err(DPoPError::NonceStoreUnavailable);
+            }
         }
 
-        let nonce = random_nonce();
-        shard.insert(
-            key,
-            NonceRecord {
-                value: nonce.clone(),
-                expires_at: now.saturating_add(self.ttl.as_secs()),
-            },
-        );
         if accepted {
+            let nonce = random_nonce();
+            let previous = current.as_ref().map(|record| record.current.clone());
+            shard.insert(
+                key,
+                NonceRecord {
+                    current: nonce.clone(),
+                    previous,
+                },
+                now.saturating_add(self.ttl.as_secs()),
+            );
             Ok(DPoPNonceDecision::Accepted(nonce))
+        } else if let Some(record) = current {
+            Ok(DPoPNonceDecision::Challenge(record.current))
         } else {
+            let nonce = random_nonce();
+            shard.insert(
+                key,
+                NonceRecord {
+                    current: nonce.clone(),
+                    previous: None,
+                },
+                now.saturating_add(self.ttl.as_secs()),
+            );
             Ok(DPoPNonceDecision::Challenge(nonce))
         }
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct ReplayKey {
     issuer: String,
     token_identifier: String,
@@ -197,6 +314,7 @@ struct ReplayKey {
 }
 
 impl ReplayKey {
+    /// Constructs the complete replay-isolation key.
     fn new(issuer: &str, token_identifier: &str, thumbprint: &str, proof_identifier: &str) -> Self {
         Self {
             issuer: issuer.to_string(),
@@ -207,7 +325,7 @@ impl ReplayKey {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct NonceKey {
     issuer: String,
     token_identifier: String,
@@ -215,6 +333,7 @@ struct NonceKey {
 }
 
 impl NonceKey {
+    /// Constructs the issuer, token, and proof-key nonce identity.
     fn new(issuer: &str, token_identifier: &str, thumbprint: &str) -> Self {
         Self {
             issuer: issuer.to_string(),
@@ -226,10 +345,11 @@ impl NonceKey {
 
 #[derive(Debug, Clone)]
 struct NonceRecord {
-    value: String,
-    expires_at: u64,
+    current: String,
+    previous: Option<String>,
 }
 
+/// Maps one state key onto the fixed shard set.
 fn shard_index<T: std::hash::Hash>(value: &T) -> usize {
     use std::hash::Hasher;
 
@@ -238,6 +358,7 @@ fn shard_index<T: std::hash::Hash>(value: &T) -> usize {
     (hasher.finish() as usize) % STATE_SHARDS
 }
 
+/// Generates a fresh 256-bit base64url nonce.
 fn random_nonce() -> String {
     let mut bytes = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);

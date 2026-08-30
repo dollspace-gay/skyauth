@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use url::Url;
 
 use crate::error::{IdentityError, SsrfError};
@@ -16,6 +17,7 @@ use crate::ssrf::{collect_limited, SafeHttpClient, SsrfFilter};
 
 /// Standard PLC directory endpoint.
 pub const DEFAULT_PLC_DIRECTORY: &str = "https://plc.directory";
+const DOH_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Supported AT Protocol Decentralized Identifier (DID) methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -97,8 +99,7 @@ impl DidDocument {
             let Some(candidate) = value.strip_prefix("at://") else {
                 return false;
             };
-            !candidate.contains(['/', '?', '#'])
-                && normalize_handle(candidate).is_ok_and(|claimed| claimed == expected)
+            !candidate.contains(['/', '?', '#']) && candidate == expected
         })
     }
 
@@ -110,7 +111,8 @@ impl DidDocument {
             if candidate.contains(['/', '?', '#']) {
                 return None;
             }
-            normalize_handle(candidate).ok()
+            let normalized = normalize_handle(candidate).ok()?;
+            (normalized == candidate).then_some(normalized)
         })
     }
 
@@ -126,12 +128,19 @@ impl DidDocument {
         }
     }
 
-    /// Extracts the authoritative `#atproto_pds` Personal Data Server endpoint URL.
+    /// Extracts the authoritative `#atproto_pds` Personal Data Server origin.
+    ///
+    /// This convenience method always applies the strict default SSRF policy, even when a
+    /// permissive [`IdentityResolver`] is configured elsewhere. The DID document must contain
+    /// exactly one PDS service and its endpoint must be an origin without a path or query.
     ///
     /// # Errors
     /// - Returns [`IdentityError::MissingPdsEndpoint`] if no `#atproto_pds` service of type
     ///   `AtprotoPersonalDataServer` is found.
-    /// - Returns [`IdentityError::InvalidPdsEndpoint`] if the service endpoint is not a valid URL.
+    /// - Returns [`IdentityError::InvalidPdsEndpoint`] if multiple services are present or the
+    ///   endpoint is not a valid origin-only URL.
+    /// - Returns [`IdentityError::Ssrf`] if the endpoint violates the strict default SSRF policy,
+    ///   including endpoints accepted only by a permissive resolver.
     pub fn extract_pds_endpoint(&self) -> Result<String, IdentityError> {
         self.extract_pds_endpoint_with_filter(&SsrfFilter::default())
     }
@@ -391,7 +400,13 @@ impl DnsTxtResolver for StandardDnsResolver {
             );
             let resp = self
                 .transport
-                .send(reqwest::Method::GET, doh_url.as_str(), headers, None)
+                .send_with_timeout(
+                    reqwest::Method::GET,
+                    doh_url.as_str(),
+                    headers,
+                    None,
+                    DOH_REQUEST_TIMEOUT,
+                )
                 .await
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
 

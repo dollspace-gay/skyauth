@@ -31,4 +31,5 @@ bash scripts/verify_formal.sh
 ```
 
 The gate also runs deliberately false Verus and Kani mutations and requires both tools to reject
-them. Logs are written under `target/proof-logs` and uploaded by CI.
+them. Local runs write logs under `target/proof-logs` by default; set `PROOF_LOG_DIR` to choose a
+different directory. CI sets `PROOF_LOG_DIR=proof-artifacts` and uploads that directory.

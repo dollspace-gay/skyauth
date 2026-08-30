@@ -18,7 +18,7 @@ use skyauth::discovery::{
     discover_oauth_endpoints, fetch_auth_server_metadata, validate_auth_server_capabilities,
     AuthorizationServerMetadata,
 };
-use skyauth::error::{DiscoveryError, IdentityError};
+use skyauth::error::{DiscoveryError, IdentityError, SsrfError};
 use skyauth::identity::{
     normalize_handle, DidDocument, DidService, DnsTxtResolver, IdentityResolver,
 };
@@ -321,7 +321,10 @@ async fn test_identity_resolver_dns_txt_and_https_fallback() {
         .unwrap();
 
     assert_eq!(resolved.id, format!("did:web:127.0.0.1%3A{port}"));
-    assert!(resolved.extract_pds_endpoint().is_err());
+    assert!(matches!(
+        resolved.extract_pds_endpoint(),
+        Err(IdentityError::Ssrf(SsrfError::InsecureScheme(_)))
+    ));
 }
 
 #[tokio::test]
@@ -407,7 +410,10 @@ async fn test_did_web_resolution() {
         .unwrap();
 
     assert_eq!(resolved.id, format!("did:web:127.0.0.1%3A{port}"));
-    assert!(resolved.extract_pds_endpoint().is_err());
+    assert!(matches!(
+        resolved.extract_pds_endpoint(),
+        Err(IdentityError::Ssrf(SsrfError::InsecureScheme(_)))
+    ));
 }
 
 #[tokio::test]
@@ -501,7 +507,10 @@ async fn test_discovery_rejects_oidc_fallback() {
 
     let filter = SsrfFilter::new(true);
     let result = fetch_auth_server_metadata(&filter, &env.auth_server.uri()).await;
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(DiscoveryError::AuthServerDiscoveryFailed(_))
+    ));
 }
 
 #[test]

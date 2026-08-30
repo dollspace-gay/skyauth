@@ -24,7 +24,7 @@ use crate::pkce::PkcePair;
 use crate::policy::time_window_expired;
 use crate::scope::ScopeSet;
 use crate::session::OAuthSession;
-use crate::ssrf::{collect_limited, SafeHttpClient, SsrfFilter};
+use crate::ssrf::{collect_limited, is_loopback_ip_host, SafeHttpClient, SsrfFilter};
 use crate::store::{
     OAuthStateStore, OAuthStore, RefreshAcquire, StateTakeResult, DEFAULT_STATE_TTL,
 };
@@ -67,9 +67,7 @@ impl OAuthClientMetadata {
         let redirect_uri = redirect_uri.into();
         let application_type = Url::parse(&redirect_uri).map_or(ApplicationType::Web, |url| {
             if url.scheme() == "http"
-                && url
-                    .host_str()
-                    .is_some_and(|host| matches!(host, "127.0.0.1" | "::1" | "localhost"))
+                && (is_loopback_ip_host(&url) || url.host_str() == Some("localhost"))
             {
                 ApplicationType::Native
             } else {
@@ -150,6 +148,7 @@ impl OAuthClientMetadata {
         self.refresh_tokens
     }
 
+    /// Validates identifiers, redirect policy, and scopes under the selected local mode.
     fn validate(&self, allow_local: bool) -> Result<(), AtprotoOAuthError> {
         let client_id = validate_client_id(&self.client_id, allow_local)?;
         validate_redirect_uri(&self.redirect_uri, self.application_type, &client_id)?;
@@ -161,6 +160,7 @@ impl OAuthClientMetadata {
     }
 }
 
+/// Parses and validates one OAuth client identifier.
 fn validate_client_id(value: &str, allow_local: bool) -> Result<Url, ClientMetadataError> {
     let url = Url::parse(value).map_err(|_| ClientMetadataError::InvalidClientId)?;
     let local = allow_local && url.scheme() == "http" && url.host_str() == Some("localhost");
@@ -177,6 +177,7 @@ fn validate_client_id(value: &str, allow_local: bool) -> Result<Url, ClientMetad
     Ok(url)
 }
 
+/// Validates a redirect URI against the client application type and identifier.
 fn validate_redirect_uri(
     value: &str,
     application_type: ApplicationType,
@@ -189,10 +190,7 @@ fn validate_redirect_uri(
     let valid = match application_type {
         ApplicationType::Web => url.scheme() == "https" && url.host_str().is_some(),
         ApplicationType::Native => {
-            (url.scheme() == "http"
-                && url
-                    .host_str()
-                    .is_some_and(|host| matches!(host, "127.0.0.1" | "::1")))
+            (url.scheme() == "http" && is_loopback_ip_host(&url))
                 || (url.scheme() == "https" && url.origin() == client_id.origin())
                 || valid_native_redirect(value, &url, client_id)
         }
@@ -204,6 +202,7 @@ fn validate_redirect_uri(
     }
 }
 
+/// Checks a native private-use redirect against its reversed-domain scheme.
 fn valid_native_redirect(value: &str, redirect: &Url, client_id: &Url) -> bool {
     let Some(host) = client_id.host_str() else {
         return false;
@@ -215,6 +214,7 @@ fn valid_native_redirect(value: &str, redirect: &Url, client_id: &Url) -> bool {
         && !value.starts_with(&format!("{expected_scheme}://"))
 }
 
+/// Enforces the AT Protocol localhost virtual-client identifier profile.
 fn validate_virtual_client_id(
     client_id: &Url,
     redirect_uri: &str,
@@ -374,6 +374,7 @@ pub struct StoredStateEntryBuilder {
 }
 
 impl StoredStateEntryBuilder {
+    /// Starts a pending-state builder with its state token and DPoP key.
     fn new(state: String, dpop_key: DPoPKey) -> Self {
         Self {
             state,
@@ -506,12 +507,14 @@ impl StoredStateEntryBuilder {
     }
 }
 
+/// Extracts one required, bounded pending-state field.
 fn required_state_field(value: Option<String>, name: &'static str) -> Result<String, StoreError> {
     value
         .filter(|value| !value.is_empty() && value.len() <= 4_096)
         .ok_or(StoreError::InvalidStateEntry(name))
 }
 
+/// Validates length and character constraints for a state token.
 pub(crate) fn validate_state_token(value: &str) -> Result<(), StoreError> {
     if value.is_empty()
         || value.len() > 1_024
@@ -525,6 +528,7 @@ pub(crate) fn validate_state_token(value: &str) -> Result<(), StoreError> {
     }
 }
 
+/// Requires an absolute HTTP or HTTPS URL for a pending-state field.
 fn validate_absolute_url(value: &str, name: &'static str) -> Result<(), StoreError> {
     Url::parse(value)
         .ok()
@@ -533,6 +537,7 @@ fn validate_absolute_url(value: &str, name: &'static str) -> Result<(), StoreErr
         .ok_or(StoreError::InvalidStateEntry(name))
 }
 
+/// Validates a stored redirect while allowing native private-use schemes.
 fn validate_redirect_url(value: &str) -> Result<(), StoreError> {
     Url::parse(value)
         .ok()
@@ -1224,6 +1229,7 @@ impl AtprotoOAuthClient {
         }
     }
 
+    /// Performs one refresh-token exchange for a store-issued generation lease.
     async fn refresh_once(
         &self,
         session: &OAuthSession,
@@ -1276,12 +1282,10 @@ impl AtprotoOAuthClient {
         }
         self.resolve_permission_sets(&refreshed).await?;
 
-        let rotated_refresh_token = resp_json
-            .refresh_token
-            .as_ref()
-            .ok_or(TokenError::MissingField("refresh_token"))?
-            .expose()
-            .to_string();
+        let rotated_refresh_token = resp_json.refresh_token.as_ref().map_or_else(
+            || refresh_token.to_string(),
+            |token| token.expose().to_string(),
+        );
         let mut replacement = session.clone();
         replacement.rotate_tokens(
             resp_json.access_token.expose(),
@@ -1293,6 +1297,7 @@ impl AtprotoOAuthClient {
         Ok(replacement)
     }
 
+    /// Authenticates and resolves each permission-set scope before use.
     async fn resolve_permission_sets(&self, scopes: &ScopeSet) -> Result<(), AtprotoOAuthError> {
         let has_includes = scopes.items().iter().any(|item| {
             matches!(
@@ -1390,6 +1395,7 @@ impl AtprotoOAuthClient {
         .into())
     }
 
+    /// Sends one DPoP-bound token request and reads its bounded response.
     async fn send_token_attempt(
         &self,
         token_endpoint: &str,
@@ -1528,6 +1534,7 @@ impl AtprotoOAuthClient {
     }
 }
 
+/// Builds the content and DPoP headers for one token endpoint request.
 fn dpop_headers(
     proof: &str,
     access_token: Option<&str>,
@@ -1551,6 +1558,7 @@ fn dpop_headers(
     Ok(headers)
 }
 
+/// Caches the AT Protocol-required nonce returned by a DPoP response.
 fn cache_required_nonce(
     response: &reqwest::Response,
     cache: &DPoPNonceCache,
@@ -1573,6 +1581,7 @@ fn cache_required_nonce(
     Ok(())
 }
 
+/// Parses a bounded OAuth error body into its code and optional description.
 fn parse_oauth_error(bytes: &[u8]) -> (String, Option<String>) {
     let parsed: Option<serde_json::Value> = serde_json::from_slice(bytes).ok();
     let error = sanitize_oauth_error_code(
@@ -1585,6 +1594,7 @@ fn parse_oauth_error(bytes: &[u8]) -> (String, Option<String>) {
     (error, None)
 }
 
+/// Deserializes a bounded token response body.
 fn parse_token_response(bytes: &[u8]) -> Result<TokenResponse, AtprotoOAuthError> {
     serde_json::from_slice(bytes)
         .map_err(|error| TokenError::Json(error.to_string()))
@@ -1655,5 +1665,15 @@ mod tests {
         assert_eq!(cb.code, "code123");
         assert_eq!(cb.state, "state123");
         assert_eq!(cb.iss.as_deref(), Some("https://auth.example.com"));
+    }
+
+    #[test]
+    fn native_ipv6_loopback_redirect_is_accepted() {
+        let metadata = OAuthClientMetadata::new(
+            "https://app.example.com/client.json",
+            "http://[::1]:43210/callback",
+        );
+        assert_eq!(metadata.application_type(), ApplicationType::Native);
+        metadata.validate(false).unwrap();
     }
 }

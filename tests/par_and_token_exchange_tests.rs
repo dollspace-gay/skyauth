@@ -13,13 +13,13 @@
 mod e2e_harness;
 
 use std::time::{Duration, SystemTime};
-use wiremock::matchers::{header, header_exists, method, path};
+use wiremock::matchers::{body_string_contains, header, header_exists, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata, StoredStateEntry};
 use skyauth::crypto::constant_time_eq;
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
-use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
+use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, StoreError, TokenError};
 use skyauth::identity::{IdentityResolverBuilder, ResolvedIdentity};
 use skyauth::par::{build_authorization_url, execute_par_request, ParParameters};
 use skyauth::pkce::PkcePair;
@@ -136,7 +136,10 @@ async fn test_callback_handler_with_iss_and_state_validation() {
     let invalid_state_cb =
         CallbackParams::new("code_valid_123", "wrong_state_token").with_iss(&env.auth_server.uri());
     let err_state = client.handle_callback(&invalid_state_cb).await;
-    assert!(matches!(err_state, Err(AtprotoOAuthError::Store(_))));
+    assert!(matches!(
+        err_state,
+        Err(AtprotoOAuthError::Store(StoreError::StateNotFound))
+    ));
 
     // Mismatched issuer should fail
     let issuer_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
@@ -578,7 +581,23 @@ async fn test_initiate_login_with_custom_scope() {
     let env = MockOAuthEnvironment::start_default().await;
 
     let request_uri = "urn:ietf:params:oauth:request_uri:req-custom-scope";
-    env.auth_server.mount_par_success(request_uri, 90).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/par"))
+        .and(header_exists("dpop"))
+        .and(body_string_contains(
+            "scope=atproto+transition%3Ageneric+transition%3Achat",
+        ))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-custom-scope-nonce")
+                .set_body_json(serde_json::json!({
+                    "request_uri": request_uri,
+                    "expires_in": 90
+                })),
+        )
+        .mount(&env.auth_server.server)
+        .await;
 
     let ssrf_filter = SsrfFilter::new(true);
     let resolver = IdentityResolverBuilder::new()

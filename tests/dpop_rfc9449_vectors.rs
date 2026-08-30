@@ -261,6 +261,27 @@ fn test_dpop_nonce_cache_concurrency() {
     for h in handles {
         h.join().unwrap();
     }
+
+    let contended_cache = DPoPNonceCache::new();
+    let contended_key = DPoPKey::generate();
+    let contended_origin = "https://shared-pds.example.com";
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(10));
+    let handles: Vec<_> = (0..10)
+        .map(|index| {
+            let cache = contended_cache.clone();
+            let key = contended_key.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                cache.set_nonce(&key, contended_origin, format!("contended-{index}"));
+                barrier.wait();
+                let observed = cache.get_nonce(&key, contended_origin).unwrap();
+                assert!((0..10).any(|candidate| observed == format!("contended-{candidate}")));
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
 }
 
 #[test]

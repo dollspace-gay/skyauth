@@ -275,13 +275,18 @@ where
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        let access_token = match unique_header(req.headers(), header::AUTHORIZATION)
-            .and_then(parse_dpop_authorization)
-        {
-            Ok(value) => value,
-            Err(code) => return Box::pin(async move { Ok(auth_response(code, None)) }),
-        };
-        let proof = match unique_header(req.headers(), http::HeaderName::from_static("dpop")) {
+        let access_token =
+            match unique_header(req.headers(), header::AUTHORIZATION, "missing_token")
+                .and_then(parse_dpop_authorization)
+            {
+                Ok(value) => value,
+                Err(code) => return Box::pin(async move { Ok(auth_response(code, None)) }),
+            };
+        let proof = match unique_header(
+            req.headers(),
+            http::HeaderName::from_static("dpop"),
+            "invalid_dpop_proof",
+        ) {
             Ok(value) => value,
             Err(code) => return Box::pin(async move { Ok(auth_response(code, None)) }),
         };
@@ -401,9 +406,10 @@ where
 fn unique_header(
     headers: &http::HeaderMap,
     name: http::HeaderName,
+    missing_error: &'static str,
 ) -> Result<String, &'static str> {
     let mut values = headers.get_all(name).iter();
-    let value = values.next().ok_or("missing_token")?;
+    let value = values.next().ok_or(missing_error)?;
     if values.next().is_some() {
         return Err("invalid_request");
     }
@@ -445,5 +451,9 @@ fn auth_response<ResBody: Default>(error_code: &str, nonce: Option<&str>) -> Res
 fn forbidden_response<ResBody: Default>() -> Response<ResBody> {
     let mut response = Response::new(ResBody::default());
     *response.status_mut() = StatusCode::FORBIDDEN;
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("DPoP error=\"insufficient_scope\""),
+    );
     response
 }

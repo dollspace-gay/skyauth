@@ -155,7 +155,9 @@ impl AccessTokenValidator for JwtAccessTokenValidator {
 
         let header: JwtHeader = serde_json::from_slice(&base64url_decode(header_segment)?)
             .map_err(|_| malformed("invalid JWT header"))?;
-        if header.typ != "at+jwt" || header.alg != "ES256" || header.kid.trim().is_empty() {
+        let access_token_type = header.typ.eq_ignore_ascii_case("at+jwt")
+            || header.typ.eq_ignore_ascii_case("application/at+jwt");
+        if !access_token_type || header.alg != "ES256" || header.kid.trim().is_empty() {
             return Err(malformed("unsupported JWT header"));
         }
 
@@ -217,16 +219,13 @@ impl AccessTokenValidator for JwtAccessTokenValidator {
                 actual: audiences.iter().cloned().collect::<Vec<_>>().join(" "),
             });
         }
-        ScopeSet::parse(&claims.scope)
+        let parsed_scope = ScopeSet::parse(&claims.scope)
             .map_err(|_| TokenError::MissingAtprotoScope("invalid scope set".to_string()))?;
-        let scopes = claims
-            .scope
-            .split(' ')
+        let scopes = parsed_scope
+            .as_str()
+            .split_ascii_whitespace()
             .map(str::to_string)
             .collect::<BTreeSet<_>>();
-        if scopes.is_empty() {
-            return Err(TokenError::MissingField("scope"));
-        }
         if claims.jti.trim().is_empty() {
             return Err(TokenError::MissingField("jti"));
         }

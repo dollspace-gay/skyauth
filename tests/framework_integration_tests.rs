@@ -331,6 +331,13 @@ mod tower_tests {
         assert!(resp_missing
             .headers()
             .contains_key(header::WWW_AUTHENTICATE));
+        assert_eq!(
+            resp_missing
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap(),
+            "DPoP error=\"invalid_dpop_proof\""
+        );
 
         // 3. Unauthorized Request: Wrong HTTP method in proof (POST vs GET)
         let post_proof = key.create_proof("POST", uri, None, Some(&ath)).unwrap();

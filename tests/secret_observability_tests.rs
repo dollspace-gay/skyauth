@@ -97,6 +97,8 @@ fn persistence_requires_explicit_export_and_round_trips() {
         .unwrap();
     let imported = OAuthSession::import_from_persistence(&exported).unwrap();
 
+    assert_eq!(imported.session_id(), session.session_id());
+    assert_eq!(imported.generation(), session.generation());
     assert_eq!(imported.sub(), session.sub());
     assert_eq!(
         imported.expose_access_token(),
@@ -107,6 +109,35 @@ fn persistence_requires_explicit_export_and_round_trips() {
         session.expose_refresh_token()
     );
     assert_eq!(imported.scope(), session.scope());
+    assert_eq!(imported.pds_endpoint(), session.pds_endpoint());
+    assert_eq!(imported.auth_server_issuer(), session.auth_server_issuer());
+    assert_eq!(imported.token_endpoint(), session.token_endpoint());
+    assert_eq!(
+        imported
+            .expires_at()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        session
+            .expires_at()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
+    assert_eq!(
+        imported
+            .created_at()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        session
+            .created_at()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
     assert_eq!(imported.dpop_key().jwk_thumbprint(), expected_thumbprint);
 }
 

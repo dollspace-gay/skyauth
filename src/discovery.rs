@@ -17,7 +17,7 @@ use crate::error::{DiscoveryError, SsrfError};
 use crate::identity::IdentityResolver;
 use crate::policy::metadata_profile_accepts;
 use crate::scope::ScopeSet;
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{is_loopback_ip_host, SsrfFilter};
 
 /// RFC 9728 OAuth 2.0 Protected Resource Metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +112,7 @@ pub struct ClientMetadataDocument {
     pub jwks_uri: Option<String>,
 }
 
+/// Supplies the OAuth metadata default application type.
 fn default_application_type() -> String {
     "web".to_string()
 }
@@ -161,6 +162,7 @@ pub async fn resolve_client_metadata_document(
     }
 }
 
+/// Parses virtual-client metadata embedded in a localhost identifier.
 fn virtual_loopback_client_metadata(
     client_id: &str,
 ) -> Result<ClientMetadataDocument, DiscoveryError> {
@@ -283,6 +285,7 @@ pub fn validate_client_metadata_document(
     Ok(())
 }
 
+/// Validates one registered redirect against application-type policy.
 fn validate_client_redirect(
     value: &str,
     application_type: &str,
@@ -302,10 +305,7 @@ fn validate_client_redirect(
     let valid = match application_type {
         "web" => redirect.scheme() == "https" && redirect.host_str().is_some(),
         "native" => {
-            (redirect.scheme() == "http"
-                && redirect
-                    .host_str()
-                    .is_some_and(|host| matches!(host, "127.0.0.1" | "::1")))
+            (redirect.scheme() == "http" && is_loopback_ip_host(&redirect))
                 || (redirect.scheme() == "https" && redirect.origin() == client_id.origin())
                 || valid_native_custom_redirect(value, &redirect, client_id)
         }
@@ -320,6 +320,7 @@ fn validate_client_redirect(
     }
 }
 
+/// Checks a native custom-scheme redirect derived from the client domain.
 fn valid_native_custom_redirect(value: &str, redirect: &Url, client_id: &Url) -> bool {
     let Some(host) = client_id.host_str() else {
         return false;
@@ -331,6 +332,7 @@ fn valid_native_custom_redirect(value: &str, redirect: &Url, client_id: &Url) ->
         && !value.starts_with(&format!("{expected_scheme}://"))
 }
 
+/// Validates the complete localhost virtual-client metadata profile.
 fn validate_virtual_client_metadata(
     document: &ClientMetadataDocument,
 ) -> Result<(), DiscoveryError> {
@@ -342,9 +344,7 @@ fn validate_virtual_client_metadata(
             DiscoveryError::ProfileViolation(format!("invalid localhost redirect URI: {error}"))
         })?;
         if url.scheme() != "http"
-            || !url
-                .host_str()
-                .is_some_and(|host| matches!(host, "127.0.0.1" | "::1"))
+            || !is_loopback_ip_host(&url)
             || !url.username().is_empty()
             || url.password().is_some()
             || url.fragment().is_some()
@@ -487,6 +487,7 @@ pub fn validate_auth_server_capabilities(
     validate_auth_server_capabilities_with_local(meta, auth_server_url, false)
 }
 
+/// Enforces authorization-server capability predicates and endpoint policy.
 fn validate_auth_server_capabilities_with_local(
     meta: &AuthorizationServerMetadata,
     auth_server_url: &str,
@@ -496,14 +497,56 @@ fn validate_auth_server_capabilities_with_local(
         validate_origin_identifier_with_local(auth_server_url, allow_insecure_localhost)?;
     let actual_norm =
         validate_origin_identifier_with_local(&meta.issuer, allow_insecure_localhost)?;
-    if expected_norm != actual_norm {
+    let issuer_matches = expected_norm == actual_norm;
+    let par_endpoint_present = !meta.pushed_authorization_request_endpoint.trim().is_empty();
+    let token_endpoint_present = !meta.token_endpoint.trim().is_empty();
+    let authorization_endpoint_present = !meta.authorization_endpoint.trim().is_empty();
+    let endpoints_present =
+        par_endpoint_present && token_endpoint_present && authorization_endpoint_present;
+    let dpop_es256 = meta
+        .dpop_signing_alg_values_supported
+        .iter()
+        .any(|value| value == "ES256");
+    let pkce_s256 = meta
+        .code_challenge_methods_supported
+        .iter()
+        .any(|value| value == "S256");
+    let code_response = meta
+        .response_types_supported
+        .iter()
+        .any(|value| value == "code");
+    let authorization_code_grant = meta
+        .grant_types_supported
+        .iter()
+        .any(|value| value == "authorization_code");
+    let refresh_grant = meta
+        .grant_types_supported
+        .iter()
+        .any(|value| value == "refresh_token");
+    let client_auth_methods = ["none", "private_key_jwt"].iter().all(|required| {
+        meta.token_endpoint_auth_methods_supported
+            .iter()
+            .any(|value| value == required)
+    });
+    let client_assertion_es256 = meta
+        .token_endpoint_auth_signing_alg_values_supported
+        .iter()
+        .any(|value| value == "ES256")
+        && !meta
+            .token_endpoint_auth_signing_alg_values_supported
+            .iter()
+            .any(|value| value == "none");
+    let atproto_scope = meta.scopes_supported.iter().any(|value| value == "atproto");
+    let request_uri_registration_required = meta.require_request_uri_registration.unwrap_or(true);
+
+    if !issuer_matches {
         return Err(DiscoveryError::IssuerMismatch {
             expected: auth_server_url.to_string(),
             actual: meta.issuer.clone(),
         });
     }
 
-    if meta.pushed_authorization_request_endpoint.trim().is_empty() {
+    if !par_endpoint_present {
         return Err(DiscoveryError::MissingParEndpoint(
             auth_server_url.to_string(),
         ));
@@ -514,14 +557,14 @@ fn validate_auth_server_capabilities_with_local(
         allow_insecure_localhost,
     )?;
 
-    if meta.token_endpoint.trim().is_empty() {
+    if !token_endpoint_present {
         return Err(DiscoveryError::MissingTokenEndpoint(
             auth_server_url.to_string(),
         ));
     }
     validate_endpoint_url(&meta.token_endpoint, "token", allow_insecure_localhost)?;
 
-    if meta.authorization_endpoint.trim().is_empty() {
+    if !authorization_endpoint_present {
         return Err(DiscoveryError::MissingAuthorizationEndpoint(
             auth_server_url.to_string(),
         ));
@@ -532,66 +575,64 @@ fn validate_auth_server_capabilities_with_local(
         allow_insecure_localhost,
     )?;
 
-    if !meta
-        .dpop_signing_alg_values_supported
-        .iter()
-        .any(|alg| alg == "ES256")
-    {
+    if !dpop_es256 {
         return Err(DiscoveryError::MissingDpopAlgorithm(
             auth_server_url.to_string(),
         ));
     }
 
-    if !meta
-        .code_challenge_methods_supported
-        .iter()
-        .any(|method| method == "S256")
-    {
+    if !pkce_s256 {
         return Err(DiscoveryError::MissingPkceMethod(
             auth_server_url.to_string(),
         ));
     }
 
-    require_value(
-        &meta.response_types_supported,
-        "code",
-        "response_types_supported",
-    )?;
-    require_value(
-        &meta.grant_types_supported,
-        "authorization_code",
-        "grant_types_supported",
-    )?;
-    require_value(
-        &meta.grant_types_supported,
-        "refresh_token",
-        "grant_types_supported",
-    )?;
-    require_value(
-        &meta.token_endpoint_auth_methods_supported,
-        "none",
-        "token_endpoint_auth_methods_supported",
-    )?;
-    require_value(
-        &meta.token_endpoint_auth_methods_supported,
-        "private_key_jwt",
-        "token_endpoint_auth_methods_supported",
-    )?;
-    require_value(
-        &meta.token_endpoint_auth_signing_alg_values_supported,
-        "ES256",
-        "token_endpoint_auth_signing_alg_values_supported",
-    )?;
-    if meta
-        .token_endpoint_auth_signing_alg_values_supported
-        .iter()
-        .any(|value| value == "none")
-    {
+    if !code_response {
+        require_value(
+            &meta.response_types_supported,
+            "code",
+            "response_types_supported",
+        )?;
+    }
+    if !authorization_code_grant {
+        require_value(
+            &meta.grant_types_supported,
+            "authorization_code",
+            "grant_types_supported",
+        )?;
+    }
+    if !refresh_grant {
+        require_value(
+            &meta.grant_types_supported,
+            "refresh_token",
+            "grant_types_supported",
+        )?;
+    }
+    if !client_auth_methods {
+        require_value(
+            &meta.token_endpoint_auth_methods_supported,
+            "none",
+            "token_endpoint_auth_methods_supported",
+        )?;
+        require_value(
+            &meta.token_endpoint_auth_methods_supported,
+            "private_key_jwt",
+            "token_endpoint_auth_methods_supported",
+        )?;
+    }
+    if !client_assertion_es256 {
+        require_value(
+            &meta.token_endpoint_auth_signing_alg_values_supported,
+            "ES256",
+            "token_endpoint_auth_signing_alg_values_supported",
+        )?;
         return Err(DiscoveryError::ProfileViolation(
             "token endpoint signing algorithms include 'none'".to_string(),
         ));
     }
-    require_value(&meta.scopes_supported, "atproto", "scopes_supported")?;
+    if !atproto_scope {
+        require_value(&meta.scopes_supported, "atproto", "scopes_supported")?;
+    }
     if !meta.authorization_response_iss_parameter_supported {
         return Err(DiscoveryError::ProfileViolation(
             "authorization response issuer parameter is not supported".to_string(),
@@ -607,47 +648,27 @@ fn validate_auth_server_capabilities_with_local(
             "client ID metadata documents are not supported".to_string(),
         ));
     }
-    if meta.require_request_uri_registration == Some(false) {
+    if !request_uri_registration_required {
         return Err(DiscoveryError::ProfileViolation(
             "request URI registration is disabled".to_string(),
         ));
     }
 
     let accepted = metadata_profile_accepts(
-        expected_norm == actual_norm,
-        true,
-        meta.dpop_signing_alg_values_supported
-            .iter()
-            .any(|value| value == "ES256"),
-        meta.code_challenge_methods_supported
-            .iter()
-            .any(|value| value == "S256"),
-        meta.response_types_supported
-            .iter()
-            .any(|value| value == "code"),
-        meta.grant_types_supported
-            .iter()
-            .any(|value| value == "authorization_code"),
-        meta.grant_types_supported
-            .iter()
-            .any(|value| value == "refresh_token"),
-        ["none", "private_key_jwt"].iter().all(|required| {
-            meta.token_endpoint_auth_methods_supported
-                .iter()
-                .any(|value| value == required)
-        }),
-        meta.token_endpoint_auth_signing_alg_values_supported
-            .iter()
-            .any(|value| value == "ES256")
-            && !meta
-                .token_endpoint_auth_signing_alg_values_supported
-                .iter()
-                .any(|value| value == "none"),
-        meta.scopes_supported.iter().any(|value| value == "atproto"),
+        issuer_matches,
+        endpoints_present,
+        dpop_es256,
+        pkce_s256,
+        code_response,
+        authorization_code_grant,
+        refresh_grant,
+        client_auth_methods,
+        client_assertion_es256,
+        atproto_scope,
         meta.authorization_response_iss_parameter_supported,
         meta.require_pushed_authorization_requests,
         meta.client_id_metadata_document_supported,
-        meta.require_request_uri_registration.unwrap_or(true),
+        request_uri_registration_required,
     );
     if !accepted {
         return Err(DiscoveryError::ProfileViolation(
@@ -658,6 +679,7 @@ fn validate_auth_server_capabilities_with_local(
     Ok(())
 }
 
+/// Derives the well-known protected-resource metadata URL.
 fn protected_resource_metadata_url(resource: &Url) -> Url {
     let mut metadata_url = resource.clone();
     let resource_path = resource.path().trim_start_matches('/');
@@ -670,6 +692,7 @@ fn protected_resource_metadata_url(resource: &Url) -> Url {
     metadata_url
 }
 
+/// Canonicalizes a resource identifier for exact metadata comparison.
 fn normalize_resource_identifier(resource: &Url) -> String {
     let serialized = resource.as_str();
     if resource.path() == "/" && resource.query().is_none() {
@@ -679,6 +702,7 @@ fn normalize_resource_identifier(resource: &Url) -> String {
     }
 }
 
+/// Validates a canonical origin identifier under optional localhost policy.
 fn validate_origin_identifier_with_local(
     value: &str,
     allow_insecure_localhost: bool,
@@ -711,6 +735,7 @@ fn validate_origin_identifier_with_local(
     Ok(origin)
 }
 
+/// Validates an endpoint URL and its relationship to the issuing origin.
 fn validate_endpoint_url(
     value: &str,
     name: &str,
@@ -737,6 +762,7 @@ fn validate_endpoint_url(
     Ok(())
 }
 
+/// Requires one exact advertised capability value.
 fn require_value(values: &[String], required: &str, field: &str) -> Result<(), DiscoveryError> {
     if values.iter().any(|value| value == required) {
         Ok(())

@@ -30,7 +30,7 @@ if [[ -z "${BASE_REF}" ]]; then
     echo -e "${YELLOW}Notice: On main branch or no base branch to compare against. Validating current CHANGELOG entry only.${NC}"
     # Verify CHANGELOG.md entry
     CURRENT_VERSION=$(grep -m1 '^[[:space:]]*version[[:space:]]*=' Cargo.toml | awk -F'"' '{print $2}')
-    if ! grep -q "## \[${CURRENT_VERSION}\]" CHANGELOG.md; then
+    if ! grep -Eq "^## (\\[${CURRENT_VERSION}\\]|${CURRENT_VERSION})([[:space:]]|$)" CHANGELOG.md; then
         echo -e "${RED}❌ CHANGELOG Check Failed!${NC}"
         echo -e "${RED}CHANGELOG.md does not contain an entry for version [${CURRENT_VERSION}].${NC}"
         exit 1
@@ -108,7 +108,7 @@ if [[ ! -f "CHANGELOG.md" ]]; then
     exit 1
 fi
 
-if ! grep -q "## \[${CURRENT_VERSION}\]" CHANGELOG.md; then
+if ! grep -Eq "^## (\\[${CURRENT_VERSION}\\]|${CURRENT_VERSION})([[:space:]]|$)" CHANGELOG.md; then
     echo -e "${RED}❌ CHANGELOG Check Failed!${NC}"
     echo -e "${RED}CHANGELOG.md does not contain an entry for version [${CURRENT_VERSION}].${NC}"
     echo -e "${YELLOW}Please document the changes for [${CURRENT_VERSION}] in CHANGELOG.md following Keep a Changelog format.${NC}"

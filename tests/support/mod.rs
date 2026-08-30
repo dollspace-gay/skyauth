@@ -1,4 +1,10 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used, missing_docs)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    dead_code,
+    missing_docs
+)]
 
 #[cfg(feature = "tower")]
 use std::sync::Arc;
@@ -53,8 +59,9 @@ impl TestTokenAuthority {
     }
 
     pub fn issue(&self, confirmation_thumbprint: &str) -> String {
-        self.issue_with_claims(
+        self.issue_with_typ_and_claims(
             confirmation_thumbprint,
+            "at+jwt",
             "did:plc:abcdefgh",
             "atproto transition:generic",
             "https://issuer.example.com",
@@ -72,6 +79,40 @@ impl TestTokenAuthority {
         audience: &str,
         lifetime_secs: i64,
     ) -> String {
+        self.issue_with_typ_and_claims(
+            confirmation_thumbprint,
+            "at+jwt",
+            subject,
+            scope,
+            issuer,
+            audience,
+            lifetime_secs,
+        )
+    }
+
+    pub fn issue_with_typ(&self, confirmation_thumbprint: &str, typ: &str) -> String {
+        self.issue_with_typ_and_claims(
+            confirmation_thumbprint,
+            typ,
+            "did:plc:abcdefgh",
+            "atproto transition:generic",
+            "https://issuer.example.com",
+            "https://pds.example.com",
+            300,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn issue_with_typ_and_claims(
+        &self,
+        confirmation_thumbprint: &str,
+        typ: &str,
+        subject: &str,
+        scope: &str,
+        issuer: &str,
+        audience: &str,
+        lifetime_secs: i64,
+    ) -> String {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -83,7 +124,7 @@ impl TestTokenAuthority {
         };
         let mut jti_bytes = [0_u8; 16];
         rand::thread_rng().fill_bytes(&mut jti_bytes);
-        let header = json!({"typ": "at+jwt", "alg": "ES256", "kid": "test-key"});
+        let header = json!({"typ": typ, "alg": "ES256", "kid": "test-key"});
         let claims = json!({
             "iss": issuer,
             "sub": subject,
