@@ -25,6 +25,7 @@ struct ExpiringShard<K, V> {
 struct TimedEntry<V> {
     value: V,
     sequence: u128,
+    expires_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,17 +82,29 @@ where
             sequence,
             key: key.clone(),
         }));
-        self.entries.insert(key, TimedEntry { value, sequence });
+        self.entries.insert(
+            key,
+            TimedEntry {
+                value,
+                sequence,
+                expires_at,
+            },
+        );
     }
 
-    /// Returns the live value stored for a key.
-    fn get(&self, key: &K) -> Option<&V> {
-        self.entries.get(key).map(|entry| &entry.value)
+    /// Returns the value stored for a key only while its lifetime remains live.
+    fn get(&self, key: &K, now: u64) -> Option<&V> {
+        self.entries
+            .get(key)
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| &entry.value)
     }
 
-    /// Reports whether a key currently has a live map entry.
-    fn contains_key(&self, key: &K) -> bool {
-        self.entries.contains_key(key)
+    /// Reports whether a key currently has an unexpired map entry.
+    fn contains_key(&self, key: &K, now: u64) -> bool {
+        self.entries
+            .get(key)
+            .is_some_and(|entry| entry.expires_at > now)
     }
 
     /// Returns the number of live map entries.
@@ -162,7 +175,7 @@ impl DPoPReplayStore for InMemoryDPoPReplayStore {
         let shard_index = shard_index(&key);
         let mut shard = self.shards[shard_index].lock();
         shard.prune_expired(now, PRUNE_BATCH);
-        let already_live = shard.contains_key(&key);
+        let already_live = shard.contains_key(&key, now);
         let mut capacity_available = shard.len() < self.shard_capacities[shard_index];
         if !already_live && !capacity_available {
             shard.prune_expired(now, usize::MAX);
@@ -253,7 +266,7 @@ impl DPoPNonceStore for InMemoryDPoPNonceStore {
         let mut shard = self.shards[shard_index].lock();
         shard.prune_expired(now, PRUNE_BATCH);
 
-        let current = shard.get(&key).cloned();
+        let current = shard.get(&key, now).cloned();
         let nonce_matches = current.as_ref().is_some_and(|record| {
             presented_nonce.is_some_and(|presented| {
                 constant_time_eq(presented.as_bytes(), record.current.as_bytes())
@@ -268,7 +281,7 @@ impl DPoPNonceStore for InMemoryDPoPNonceStore {
             nonce_matches,
             require_initial_nonce,
         );
-        let existing = shard.contains_key(&key);
+        let existing = shard.contains_key(&key, now);
         if !existing && shard.len() >= self.shard_capacities[shard_index] {
             shard.prune_expired(now, usize::MAX);
             if shard.len() >= self.shard_capacities[shard_index] {
@@ -363,4 +376,24 @@ fn random_nonce() -> String {
     let mut bytes = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     base64url_encode(&bytes)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_entry_is_never_live_after_bounded_pruning() {
+        let mut shard = ExpiringShard::default();
+        for key in 0..=PRUNE_BATCH {
+            shard.insert(key, key, 1);
+        }
+
+        shard.prune_expired(2, PRUNE_BATCH);
+
+        assert_eq!(shard.len(), 1);
+        assert_eq!(shard.get(&PRUNE_BATCH, 2), None);
+        assert!(!shard.contains_key(&PRUNE_BATCH, 2));
+    }
 }

@@ -246,6 +246,7 @@ struct RefreshRecord {
 }
 
 impl RefreshRecord {
+    /// Creates a refresh record with one active generation lease.
     fn new(generation: u64, lease_id: String, now: Instant) -> Self {
         Self {
             current: None,
@@ -255,6 +256,13 @@ impl RefreshRecord {
             last_touched: now,
         }
     }
+}
+
+/// Registers a refresh waiter before the coordination lock can be released.
+fn registered_refresh_waiter(notify: Arc<Notify>) -> Pin<Box<tokio::sync::futures::OwnedNotified>> {
+    let mut waiter = Box::pin(notify.notified_owned());
+    waiter.as_mut().enable();
+    waiter
 }
 
 impl StateSlot {
@@ -517,7 +525,7 @@ impl OAuthStateStore {
                         return RefreshLease::for_backend(session_id, generation, lease_id)
                             .map(RefreshAcquire::Acquired);
                     }
-                    Some(Arc::clone(&record.notify).notified_owned())
+                    Some(registered_refresh_waiter(Arc::clone(&record.notify)))
                 } else {
                     if refreshes.len() >= self.max_refresh_sessions {
                         Self::prune_idle_refreshes_locked(
@@ -974,6 +982,18 @@ mod tests {
             Err(StoreError::ShutdownTimeout)
         ));
         assert!(pruner.tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registered_refresh_waiter_receives_pre_poll_broadcast() {
+        let notify = Arc::new(Notify::new());
+        let waiter = registered_refresh_waiter(Arc::clone(&notify));
+
+        notify.notify_waiters();
+
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("enabled waiter must observe notify_waiters");
     }
 
     #[tokio::test]

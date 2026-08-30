@@ -735,7 +735,7 @@ fn validate_origin_identifier_with_local(
     Ok(origin)
 }
 
-/// Validates an endpoint URL and its relationship to the issuing origin.
+/// Validates an endpoint URL's scheme, host, userinfo, and fragment.
 fn validate_endpoint_url(
     value: &str,
     name: &str,

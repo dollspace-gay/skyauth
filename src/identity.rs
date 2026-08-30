@@ -379,6 +379,16 @@ impl Default for StandardDnsResolver {
     }
 }
 
+/// Applies the complete DNS-over-HTTPS budget to request and body processing.
+async fn complete_doh_query<F>(query: F) -> Result<Vec<String>, IdentityError>
+where
+    F: std::future::Future<Output = Result<Vec<String>, IdentityError>>,
+{
+    tokio::time::timeout(DOH_REQUEST_TIMEOUT, query)
+        .await
+        .map_err(|_| IdentityError::Dns("DNS request timed out".to_string()))?
+}
+
 impl DnsTxtResolver for StandardDnsResolver {
     fn resolve_txt<'a>(
         &'a self,
@@ -398,63 +408,67 @@ impl DnsTxtResolver for StandardDnsResolver {
                 reqwest::header::ACCEPT,
                 reqwest::header::HeaderValue::from_static("application/dns-json"),
             );
-            let resp = self
-                .transport
-                .send_with_timeout(
-                    reqwest::Method::GET,
-                    doh_url.as_str(),
-                    headers,
-                    None,
-                    DOH_REQUEST_TIMEOUT,
-                )
-                .await
-                .map_err(|e| IdentityError::Dns(e.to_string()))?;
+            let query = async {
+                let resp = self
+                    .transport
+                    .send_with_timeout(
+                        reqwest::Method::GET,
+                        doh_url.as_str(),
+                        headers,
+                        None,
+                        DOH_REQUEST_TIMEOUT,
+                    )
+                    .await
+                    .map_err(|e| IdentityError::Dns(e.to_string()))?;
 
-            if !resp.status().is_success() {
-                return Ok(Vec::new());
-            }
+                if !resp.status().is_success() {
+                    return Ok(Vec::new());
+                }
 
-            #[derive(Deserialize)]
-            struct DohAnswer {
-                #[serde(rename = "type")]
-                answer_type: u16,
-                data: String,
-            }
+                #[derive(Deserialize)]
+                struct DohAnswer {
+                    #[serde(rename = "type")]
+                    answer_type: u16,
+                    data: String,
+                }
 
-            #[derive(Deserialize)]
-            struct DohResponse {
-                #[serde(rename = "Answer", default)]
-                answer: Vec<DohAnswer>,
-            }
+                #[derive(Deserialize)]
+                struct DohResponse {
+                    #[serde(rename = "Answer", default)]
+                    answer: Vec<DohAnswer>,
+                }
 
-            let content_type = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(';').next())
-                .map(str::trim);
-            if !content_type.is_some_and(|value| {
-                value.eq_ignore_ascii_case("application/dns-json")
-                    || value.eq_ignore_ascii_case("application/json")
-            }) {
-                return Err(IdentityError::Dns(
-                    "DNS response has an unsupported content type".to_string(),
-                ));
-            }
-            let bytes = collect_limited(resp, 65_536)
-                .await
-                .map_err(|e| IdentityError::Dns(e.to_string()))?;
-            let body: DohResponse =
-                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Dns(e.to_string()))?;
+                let content_type = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.split(';').next())
+                    .map(str::trim);
+                if !content_type.is_some_and(|value| {
+                    value.eq_ignore_ascii_case("application/dns-json")
+                        || value.eq_ignore_ascii_case("application/json")
+                }) {
+                    return Err(IdentityError::Dns(
+                        "DNS response has an unsupported content type".to_string(),
+                    ));
+                }
+                let bytes = collect_limited(resp, 65_536)
+                    .await
+                    .map_err(|e| IdentityError::Dns(e.to_string()))?;
+                let body: DohResponse = serde_json::from_slice(&bytes)
+                    .map_err(|e| IdentityError::Dns(e.to_string()))?;
 
-            let records = body
-                .answer
-                .into_iter()
-                .filter(|a| a.answer_type == 16) // TXT
-                .map(|a| a.data.trim_matches('"').to_string())
-                .collect();
+                let records = body
+                    .answer
+                    .into_iter()
+                    .filter(|a| a.answer_type == 16) // TXT
+                    .map(|a| a.data.trim_matches('"').to_string())
+                    .collect();
 
-            Ok(records)
+                Ok(records)
+            };
+
+            complete_doh_query(query).await
         })
     }
 }
@@ -746,6 +760,14 @@ impl IdentityResolver {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn doh_timeout_covers_unfinished_response_processing() {
+        let result = complete_doh_query(std::future::pending()).await;
+        assert!(
+            matches!(result, Err(IdentityError::Dns(message)) if message == "DNS request timed out")
+        );
+    }
 
     #[test]
     fn test_handle_normalization_valid() {

@@ -541,14 +541,17 @@ impl SafeHttpClient {
         pinned_addr: SocketAddr,
         literal: bool,
     ) -> Result<reqwest::Client, SsrfError> {
-        if let Some(client) = self
-            .clients
-            .lock()
-            .entries
-            .get(key)
-            .map(|entry| entry.client.clone())
         {
-            return Ok(client);
+            let mut cache = self.clients.lock();
+            let PinnedClientCache {
+                entries,
+                next_sequence,
+            } = &mut *cache;
+            if let Some(entry) = entries.get_mut(key) {
+                entry.sequence = *next_sequence;
+                *next_sequence = next_sequence.saturating_add(1);
+                return Ok(entry.client.clone());
+            }
         }
 
         let mut builder = reqwest::Client::builder()
@@ -881,6 +884,47 @@ mod tests {
         assert!(matches!(rebound, Err(SsrfError::BlockedIp(_))));
         assert_eq!(resolver.calls(), 2);
         server.await.unwrap();
+    }
+
+    #[test]
+    fn pinned_client_cache_evicts_least_recently_used_entry() {
+        let client = SafeHttpClient::new(SsrfFilter::default());
+        let address = SocketAddr::from(([93, 184, 216, 34], 443));
+        for index in 0..MAX_PINNED_CLIENTS {
+            let host = format!("host-{index}.example.com");
+            let key = PinnedClientKey {
+                host: host.clone(),
+                address: Some(address),
+            };
+            client.client_for(&key, &host, address, false).unwrap();
+        }
+
+        let hot_host = "host-0.example.com";
+        let hot_key = PinnedClientKey {
+            host: hot_host.to_string(),
+            address: Some(address),
+        };
+        client
+            .client_for(&hot_key, hot_host, address, false)
+            .unwrap();
+
+        let new_host = "host-new.example.com";
+        let new_key = PinnedClientKey {
+            host: new_host.to_string(),
+            address: Some(address),
+        };
+        client
+            .client_for(&new_key, new_host, address, false)
+            .unwrap();
+
+        let cache = client.clients.lock();
+        assert_eq!(cache.entries.len(), MAX_PINNED_CLIENTS);
+        assert!(cache.entries.contains_key(&hot_key));
+        assert!(!cache.entries.contains_key(&PinnedClientKey {
+            host: "host-1.example.com".to_string(),
+            address: Some(address),
+        }));
+        assert!(cache.entries.contains_key(&new_key));
     }
 
     #[test]
