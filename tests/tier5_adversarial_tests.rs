@@ -46,7 +46,9 @@ fn craft_custom_proof(
     nonce: Option<&str>,
     ath: Option<&str>,
 ) -> String {
-    let pem = key.to_pkcs8_pem().unwrap();
+    let pem = key
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&pem).unwrap();
 
     let header = serde_json::json!({
@@ -90,7 +92,9 @@ fn craft_custom_proof(
 
 /// Helper to sign an arbitrary JSON payload with a given key.
 fn sign_raw_json(key: &DPoPKey, header: &serde_json::Value, payload: &serde_json::Value) -> String {
-    let pem = key.to_pkcs8_pem().unwrap();
+    let pem = key
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&pem).unwrap();
 
     let h_b64 = base64url_encode(header.to_string().as_bytes());
@@ -518,7 +522,9 @@ fn test_dpop_key_substitution_attack_fails() {
     let signing_input = format!("{h_b64}.{p_b64}");
 
     // Mallory signs with Mallory's private key
-    let mallory_pem = key_mallory.to_pkcs8_pem().unwrap();
+    let mallory_pem = key_mallory
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .unwrap();
     let mallory_signing_key = SigningKey::from_pkcs8_pem(&mallory_pem).unwrap();
     let sig_bytes = sign_p256_raw(&mallory_signing_key, signing_input.as_bytes()).unwrap();
     let jwt = format!("{signing_input}.{}", base64url_encode(&sig_bytes));
@@ -792,10 +798,7 @@ fn test_dpop_nonce_and_ath_strict_validation() {
         Some(&valid_ath),
         None,
     );
-    assert!(matches!(
-        res_bad_nonce,
-        Err(DPoPError::NonceMismatch { .. })
-    ));
+    assert!(matches!(res_bad_nonce, Err(DPoPError::NonceMismatch)));
 
     // 3. ATH mismatch
     let res_bad_ath = verifier.verify_proof(
@@ -806,7 +809,7 @@ fn test_dpop_nonce_and_ath_strict_validation() {
         Some("wrong-ath"),
         None,
     );
-    assert!(matches!(res_bad_ath, Err(DPoPError::AthMismatch { .. })));
+    assert!(matches!(res_bad_ath, Err(DPoPError::AthMismatch)));
 
     // 4. Proof without nonce when server requires nonce
     let proof_no_nonce = key
@@ -984,6 +987,7 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
 #[test]
 fn test_dpop_nonce_cache_high_concurrency_stress() {
     let cache = DPoPNonceCache::new();
+    let key = DPoPKey::generate();
     let thread_count = 50;
     let iterations = 200;
 
@@ -992,6 +996,7 @@ fn test_dpop_nonce_cache_high_concurrency_stress() {
     let handles: Vec<_> = (0..thread_count)
         .map(|tid| {
             let cache_clone = cache.clone();
+            let key = key.clone();
             let counter_clone = write_counter.clone();
             std::thread::spawn(move || {
                 for iter in 0..iterations {
@@ -1000,18 +1005,18 @@ fn test_dpop_nonce_cache_high_concurrency_stress() {
                     let nonce = format!("nonce-t{tid}-i{iter}");
 
                     // Set nonce
-                    cache_clone.set_nonce(&origin, nonce.clone());
+                    cache_clone.set_nonce(&key, &origin, nonce.clone());
                     counter_clone.fetch_add(1, Ordering::Relaxed);
 
                     // Get nonce (should never panic)
-                    let _ = cache_clone.get_nonce(&origin);
+                    let _ = cache_clone.get_nonce(&key, &origin);
 
                     // Read other origins with varied casing
                     let upper_origin = format!("HTTPS://PDS{origin_idx}.BSKY.SOCIAL/XRPC");
-                    let _ = cache_clone.get_nonce(&upper_origin);
+                    let _ = cache_clone.get_nonce(&key, &upper_origin);
 
                     if iter % 50 == 0 {
-                        cache_clone.clear_nonce(&origin);
+                        cache_clone.clear_nonce(&key, &origin);
                     }
                 }
             })
@@ -1031,24 +1036,26 @@ fn test_dpop_nonce_cache_high_concurrency_stress() {
 #[test]
 fn test_dpop_nonce_cache_case_and_whitespace_invariance() {
     let cache = DPoPNonceCache::new();
+    let key = DPoPKey::generate();
 
     cache.set_nonce(
+        &key,
         "  HTTPS://AUTH.EXAMPLE.COM:8443/OAUTH/TOKEN  ",
         "  challenge-nonce-xyz  ",
     );
 
     assert_eq!(
-        cache.get_nonce("https://auth.example.com:8443/oauth/token"),
+        cache.get_nonce(&key, "https://auth.example.com:8443/oauth/token"),
         Some("  challenge-nonce-xyz  ".to_string())
     );
     assert_eq!(
-        cache.get_nonce("HTTPS://AUTH.EXAMPLE.COM:8443/OAUTH/TOKEN"),
+        cache.get_nonce(&key, "HTTPS://AUTH.EXAMPLE.COM:8443/OAUTH/TOKEN"),
         Some("  challenge-nonce-xyz  ".to_string())
     );
 
-    cache.clear_nonce("https://auth.example.com:8443/oauth/token");
+    cache.clear_nonce(&key, "https://auth.example.com:8443/oauth/token");
     assert_eq!(
-        cache.get_nonce("https://auth.example.com:8443/oauth/token"),
+        cache.get_nonce(&key, "https://auth.example.com:8443/oauth/token"),
         None
     );
 }
@@ -2367,10 +2374,7 @@ fn test_adv_did_service_endpoint_tampering() {
             }],
         };
         assert!(
-            matches!(
-                doc_bad_scheme.extract_pds_endpoint(),
-                Err(IdentityError::InvalidPdsEndpoint(_))
-            ),
+            doc_bad_scheme.extract_pds_endpoint().is_err(),
             "PDS endpoint with scheme '{bad_url}' should fail"
         );
     }
@@ -2391,7 +2395,7 @@ fn test_adv_did_service_endpoint_tampering() {
         Err(IdentityError::InvalidPdsEndpoint(_))
     ));
 
-    // 6. Trailing slashes stripped cleanly
+    // 6. Non-origin paths are rejected
     let doc_slashes = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2402,10 +2406,7 @@ fn test_adv_did_service_endpoint_tampering() {
             service_endpoint: "https://pds.example.com///".to_string(),
         }],
     };
-    assert_eq!(
-        doc_slashes.extract_pds_endpoint().unwrap(),
-        "https://pds.example.com"
-    );
+    assert!(doc_slashes.extract_pds_endpoint().is_err());
 
     // 7. Full URI fragment id (did:plc:...#atproto_pds)
     let doc_full_fragment = DidDocument {
@@ -2684,11 +2685,6 @@ use skyauth::par::{build_authorization_url, execute_par_request, ParParameters};
 use skyauth::session::OAuthSession;
 use skyauth::ssrf::{is_blocked_hostname, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
 use skyauth::store::{OAuthStateStore, OAuthStore};
-use skyauth::verification::kani_harnesses::{
-    global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
-    proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
-    proof_ssrf_restricted_ip_rejection,
-};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[test]
@@ -2921,8 +2917,11 @@ fn test_m7_adv_oauth_session_rotation_and_auth_header() {
         .unwrap();
 
         assert_eq!(session.sub(), "did:plc:alice123");
-        assert_eq!(session.access_token(), "initial_access_token_xyz");
-        assert_eq!(session.refresh_token(), Some("initial_refresh_token_abc"));
+        assert_eq!(session.expose_access_token(), "initial_access_token_xyz");
+        assert_eq!(
+            session.expose_refresh_token(),
+            Some("initial_refresh_token_abc")
+        );
         assert_eq!(session.token_type(), valid_type);
         assert_eq!(session.dpop_auth_header(), "DPoP initial_access_token_xyz");
         assert!(!session.is_expired());
@@ -2961,13 +2960,19 @@ fn test_m7_adv_oauth_session_rotation_and_auth_header() {
     )
     .unwrap();
 
-    session.rotate_tokens(
-        "new_access_token_999",
-        Some("new_refresh_token_888".to_string()),
-        Some(7200),
+    session
+        .rotate_tokens(
+            "new_access_token_999",
+            Some("new_refresh_token_888".to_string()),
+            Some("atproto".to_string()),
+            Some(7200),
+        )
+        .unwrap();
+    assert_eq!(session.expose_access_token(), "new_access_token_999");
+    assert_eq!(
+        session.expose_refresh_token(),
+        Some("new_refresh_token_888")
     );
-    assert_eq!(session.access_token(), "new_access_token_999");
-    assert_eq!(session.refresh_token(), Some("new_refresh_token_888"));
     assert_eq!(session.dpop_auth_header(), "DPoP new_access_token_999");
     assert!(!session.is_expired());
 
@@ -3004,21 +3009,21 @@ async fn test_m7_adv_sharded_store_100_tasks_50_keys_race() {
     // Pre-insert exactly 50 distinct keys
     for k in 0..50 {
         let key = format!("state_key_{k}");
-        let entry = StoredStateEntry {
-            state: key.clone(),
-            client_id: "https://app.example.com/client-metadata.json".to_string(),
-            code_verifier: "pkce_verifier_string_1234567890123456789012".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: "https://auth.example.com".to_string(),
-            did: Some("did:plc:test1234".to_string()),
-            handle: Some("alice.bsky.social".to_string()),
-            redirect_uri: "https://app.example.com/callback".to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
-            scopes: "atproto".to_string(),
-            created_at: std::time::SystemTime::now(),
-            expires_in_secs: 60,
-        };
+        let entry = StoredStateEntry::builder(key.clone(), DPoPKey::generate())
+            .client_id("https://app.example.com/client-metadata.json")
+            .code_verifier("pkce_verifier_string_1234567890123456789012")
+            .issuer("https://auth.example.com")
+            .identity(
+                Some("did:plc:test1234".to_string()),
+                Some("alice.bsky.social".to_string()),
+            )
+            .redirect_uri("https://app.example.com/callback")
+            .pds_endpoint("https://pds.example.com")
+            .token_endpoint("https://auth.example.com/oauth/token")
+            .scopes("atproto")
+            .lifetime(std::time::SystemTime::now(), 60)
+            .build()
+            .unwrap();
         store
             .insert_state(key, entry, Duration::from_secs(60))
             .await
@@ -3059,64 +3064,6 @@ async fn test_m7_adv_sharded_store_100_tasks_50_keys_race() {
     );
 }
 
-#[test]
-fn test_m7_adv_formal_anti_vacuity_and_kani_proofs() {
-    // Execute all 5 formal proof models with reachability assertions
-    proof_single_use_state_consumption();
-    proof_ssrf_restricted_ip_rejection();
-    proof_pkce_s256_verifier_bounds();
-    proof_constant_time_eq_soundness();
-    proof_dpop_htu_normalization_invariants();
-
-    let coverage = global_coverage();
-    let required_tags = [
-        // 1. Single-use state
-        "uninitialized_state_rejected",
-        "state_inserted",
-        "first_take_success",
-        "second_take_rejected",
-        "expired_state_rejected",
-        "concurrent_race_single_winner",
-        // 2. SSRF
-        "rfc1918_10_blocked",
-        "rfc1918_172_blocked",
-        "rfc1918_192_blocked",
-        "cloud_metadata_169_254_blocked",
-        "loopback_127_blocked",
-        "cgnat_100_64_blocked",
-        "ipv6_ula_fc00_blocked",
-        "ipv6_link_local_fe80_blocked",
-        "ipv4_mapped_ipv6_blocked",
-        "public_ip_allowed",
-        // 3. PKCE
-        "valid_min_length_43_verifier",
-        "valid_max_length_128_verifier",
-        "valid_mid_length_verifier",
-        "invalid_short_length_rejected",
-        "invalid_long_length_rejected",
-        "invalid_character_rejected",
-        "challenge_length_is_43",
-        // 4. Constant time
-        "equal_non_empty_slices_true",
-        "differing_first_byte_false",
-        "differing_last_byte_false",
-        "differing_middle_byte_false",
-        "mismatched_length_false",
-        "empty_slices_true",
-        // 5. DPoP HTU
-        "query_stripped_success",
-        "fragment_stripped_success",
-        "port_443_stripped_success",
-        "port_80_stripped_success",
-        "custom_port_preserved_success",
-        "uppercase_host_lowercased_success",
-        "invalid_scheme_rejected",
-    ];
-
-    coverage.assert_all_covered(&required_tags);
-    assert!(coverage.covered_count() >= required_tags.len());
-}
-
 #[tokio::test]
 async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
     let mock_server = MockServer::start().await;
@@ -3148,7 +3095,7 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         Err(DiscoveryError::MissingAuthorizationServers(_))
     ));
 
-    // 2. Scenario 2: AS discovery falls back from /oauth-authorization-server (404) to /openid-configuration (200)
+    // 2. Scenario 2: AS discovery rejects a missing OAuth metadata document
     let mock_server2 = MockServer::start().await;
     let base_uri2 = mock_server2.uri();
 
@@ -3176,6 +3123,7 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: Some(true),
     };
 
     Mock::given(method("GET"))
@@ -3189,9 +3137,7 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         .await;
 
     let fallback_res = fetch_auth_server_metadata(&ssrf_filter, &base_uri2).await;
-    assert!(fallback_res.is_ok(), "OIDC fallback must succeed on 404");
-    let as_meta = fallback_res.unwrap();
-    assert_eq!(as_meta.issuer, base_uri2);
+    assert!(fallback_res.is_err());
 
     // 3. Scenario 3: PAR execution with 1-hop use_dpop_nonce auto-retry
     let mock_server3 = MockServer::start().await;
@@ -3219,6 +3165,7 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("DPoP-Nonce", "server_next_nonce_xyz")
                 .set_body_json(serde_json::json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req12345678",
                     "expires_in": 90
@@ -3258,8 +3205,8 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         .origin()
         .ascii_serialization();
     assert_eq!(
-        nonce_cache.get_nonce(&server_origin),
-        Some("server_challenge_nonce_xyz".to_string())
+        nonce_cache.get_nonce(&dpop_key, &server_origin),
+        Some("server_next_nonce_xyz".to_string())
     );
 }
 

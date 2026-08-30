@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::CallbackParams;
-use crate::error::IntegrationError;
+use crate::error::{sanitize_oauth_error_code, IntegrationError};
 use crate::session::OAuthSession;
 
 #[cfg(feature = "axum")]
@@ -28,18 +28,34 @@ pub mod tower;
 ///
 /// Handles both successful authorizations (providing `code` and `state`) and error
 /// responses returned by the authorization server (e.g. `error=access_denied`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct OAuthCallbackQuery {
     /// The authorization code issued by the authorization server.
-    pub code: Option<String>,
+    code: Option<String>,
     /// The state parameter originally passed to the authorization endpoint.
-    pub state: Option<String>,
+    state: Option<String>,
     /// The authorization server issuer identifier (RFC 9207 `iss` parameter).
-    pub iss: Option<String>,
+    iss: Option<String>,
     /// Error code if the user or authorization server rejected the request.
-    pub error: Option<String>,
+    error: Option<String>,
     /// Human-readable description of the error.
-    pub error_description: Option<String>,
+    error_description: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthCallbackQuery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OAuthCallbackQuery")
+            .field("code", &self.code.as_ref().map(|_| "[REDACTED]"))
+            .field("state", &self.state.as_ref().map(|_| "[REDACTED]"))
+            .field("iss", &self.iss)
+            .field("error", &self.error)
+            .field(
+                "error_description",
+                &self.error_description.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl OAuthCallbackQuery {
@@ -74,6 +90,30 @@ impl OAuthCallbackQuery {
         self
     }
 
+    /// Explicitly exposes the returned authorization code, when present.
+    #[must_use]
+    pub fn expose_code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    /// Explicitly exposes the callback state, when present.
+    #[must_use]
+    pub fn expose_state(&self) -> Option<&str> {
+        self.state.as_deref()
+    }
+
+    /// Returns the authorization response issuer, when present.
+    #[must_use]
+    pub fn issuer(&self) -> Option<&str> {
+        self.iss.as_deref()
+    }
+
+    /// Returns the OAuth error code, when present.
+    #[must_use]
+    pub fn error_code(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     /// Validates this callback query and converts it into [`CallbackParams`].
     ///
     /// # Errors
@@ -84,8 +124,8 @@ impl OAuthCallbackQuery {
     pub fn to_callback_params(&self) -> Result<CallbackParams, IntegrationError> {
         if let Some(err) = &self.error {
             return Err(IntegrationError::OAuthError {
-                error: err.clone(),
-                description: self.error_description.clone().unwrap_or_default(),
+                error: sanitize_oauth_error_code(Some(err), "authorization_error"),
+                description: String::new(),
             });
         }
 
@@ -112,27 +152,17 @@ impl OAuthCallbackQuery {
 /// An authenticated user extracted from an inbound DPoP-authenticated HTTP request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthenticatedUser {
-    /// The subject Decentralized Identifier (`did:plc:...` or `did:web:...`).
-    pub did: String,
-    /// The DPoP-bound access token string.
-    pub access_token: String,
-    /// RFC 7638 JWK thumbprint (`jkt`) of the bound public key.
-    pub dpop_thumbprint: String,
-    /// Granted OAuth scopes, if known.
-    pub scope: Option<String>,
+    did: String,
+    dpop_thumbprint: String,
+    scope: Option<String>,
 }
 
 impl AuthenticatedUser {
     /// Creates a new `AuthenticatedUser`.
     #[must_use]
-    pub fn new(
-        did: impl Into<String>,
-        access_token: impl Into<String>,
-        dpop_thumbprint: impl Into<String>,
-    ) -> Self {
+    pub fn new(did: impl Into<String>, dpop_thumbprint: impl Into<String>) -> Self {
         Self {
             did: did.into(),
-            access_token: access_token.into(),
             dpop_thumbprint: dpop_thumbprint.into(),
             scope: None,
         }
@@ -149,12 +179,6 @@ impl AuthenticatedUser {
     #[must_use]
     pub fn did(&self) -> &str {
         &self.did
-    }
-
-    /// Returns the access token.
-    #[must_use]
-    pub fn access_token(&self) -> &str {
-        &self.access_token
     }
 
     /// Returns the DPoP key thumbprint.
@@ -193,10 +217,9 @@ impl OAuthSessionExtension {
     #[must_use]
     pub fn from_session(session: OAuthSession) -> Self {
         let user = AuthenticatedUser {
-            did: session.sub.clone(),
-            access_token: session.access_token.clone(),
-            dpop_thumbprint: session.dpop_key.jwk_thumbprint(),
-            scope: session.scope.clone(),
+            did: session.sub().to_string(),
+            dpop_thumbprint: session.dpop_key().jwk_thumbprint(),
+            scope: session.scope().map(ToString::to_string),
         };
         Self {
             user,

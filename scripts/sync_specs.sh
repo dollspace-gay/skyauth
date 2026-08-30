@@ -1,300 +1,168 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# atproto-oauth-rs Upstream Specification & Lexicon Synchronization Script
-# ==============================================================================
-# Verifies and synchronizes bundled AT Protocol Lexicons and RFC JSON Schemas
-# against canonical upstream sources with automated drift detection and offline fallback.
-#
-# Usage:
-#   ./scripts/sync_specs.sh --check     # CI verification mode (returns 1 on drift)
-#   ./scripts/sync_specs.sh --verify    # Alias for --check
-#   ./scripts/sync_specs.sh --sync      # Fetch latest upstream specs & update checksums
-#   ./scripts/sync_specs.sh --help      # Show this help message
-# ==============================================================================
-
 set -euo pipefail
-
-# ANSI Color Codes
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MANIFEST_FILE="${ROOT_DIR}/schemas/.checksums.sha256"
+PROVENANCE_FILE="${ROOT_DIR}/schemas/provenance.json"
 
-LEXICONS_DIR="${ROOT_DIR}/lexicons"
-SCHEMAS_DIR="${ROOT_DIR}/schemas"
-MANIFEST_FILE="${SCHEMAS_DIR}/.checksums.sha256"
-
-# Canonical Upstream Lexicon URLs
-RESOLVE_HANDLE_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/identity/resolveHandle.json"
-CREATE_SESSION_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/createSession.json"
-REFRESH_SESSION_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/refreshSession.json"
-
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+managed_files() {
+    jq -r '.artifacts[].local_path' "${PROVENANCE_FILE}"
 }
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+sha256_file() {
+    sha256sum "$1" | awk '{print $1}'
 }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-}
-
-# Cross-platform SHA256 checksum calculator
-calc_sha256() {
-    local file="$1"
-    if command -v sha256sum &>/dev/null; then
-        sha256sum "${file}" | awk '{print $1}'
-    elif command -v shasum &>/dev/null; then
-        shasum -a 256 "${file}" | awk '{print $1}'
-    else
-        openssl dgst -sha256 "${file}" | awk '{print $2}'
-    fi
-}
-
-# JSON syntax validator
 validate_json() {
-    local file="$1"
-    if command -v jq &>/dev/null; then
-        jq empty "${file}" >/dev/null 2>&1
-    elif command -v python3 &>/dev/null; then
-        python3 -m json.tool "${file}" >/dev/null 2>&1
-    elif command -v node &>/dev/null; then
-        node -e "JSON.parse(require('fs').readFileSync(process.argv[1]))" "${file}" >/dev/null 2>&1
-    else
-        # Basic check if no JSON tool installed
-        test -s "${file}"
-    fi
+    jq empty "$1" >/dev/null
 }
 
-# Format JSON in-place if tool available
-format_json() {
-    local file="$1"
-    if command -v jq &>/dev/null; then
-        local tmp="${file}.tmp.$$"
-        jq . "${file}" > "${tmp}" && mv "${tmp}" "${file}"
-    elif command -v python3 &>/dev/null; then
-        local tmp="${file}.tmp.$$"
-        python3 -m json.tool "${file}" > "${tmp}" && mv "${tmp}" "${file}"
-    fi
+normalize_json() {
+    jq . "$1"
 }
 
-# List of all canonical managed files relative to ROOT_DIR
-get_managed_files() {
-    cat <<EOF
-lexicons/com/atproto/identity/resolveHandle.json
-lexicons/com/atproto/server/createSession.json
-lexicons/com/atproto/server/refreshSession.json
-schemas/rfc8414_authorization_server.json
-schemas/rfc9728_protected_resource.json
-schemas/rfc9449_dpop_proof.json
-schemas/atproto_client_metadata.json
-EOF
-}
-
-# Generate checksums manifest for all managed files
 generate_manifest() {
-    log_info "Updating checksum manifest at ${MANIFEST_FILE}..."
-    mkdir -p "$(dirname "${MANIFEST_FILE}")"
-    local tmp_manifest="${MANIFEST_FILE}.tmp.$$"
-    : > "${tmp_manifest}"
-
-    while IFS= read -r rel_path; do
-        local full_path="${ROOT_DIR}/${rel_path}"
-        if [[ ! -f "${full_path}" ]]; then
-            log_error "Cannot generate manifest: missing file ${rel_path}"
-            rm -f "${tmp_manifest}"
-            return 1
-        fi
-        local csum
-        csum=$(calc_sha256 "${full_path}")
-        echo "${csum}  ${rel_path}" >> "${tmp_manifest}"
-    done < <(get_managed_files)
-
-    mv "${tmp_manifest}" "${MANIFEST_FILE}"
-    log_success "Checksum manifest updated successfully."
+    local temporary
+    temporary="$(mktemp "${MANIFEST_FILE}.XXXXXX")"
+    while IFS= read -r path; do
+        printf '%s  %s\n' "$(sha256_file "${ROOT_DIR}/${path}")" "${path}" >>"${temporary}"
+    done < <(managed_files)
+    mv "${temporary}" "${MANIFEST_FILE}"
 }
 
-# Verify mode: Check existence, validity, and manifest checksums
-verify_specs() {
-    log_info "Running upstream specification drift verification..."
-    local drift_detected=0
-
-    # 1. Verify existence and JSON validity
-    while IFS= read -r rel_path; do
-        local full_path="${ROOT_DIR}/${rel_path}"
-        if [[ ! -f "${full_path}" ]]; then
-            log_error "Missing required specification/lexicon: ${rel_path}"
-            drift_detected=1
+verify_local() {
+    validate_json "${PROVENANCE_FILE}"
+    local failed=0
+    while IFS= read -r path; do
+        local file="${ROOT_DIR}/${path}"
+        if [[ ! -f "${file}" ]] || ! validate_json "${file}"; then
+            printf 'invalid or missing managed artifact: %s\n' "${path}" >&2
+            failed=1
             continue
         fi
-
-        if ! validate_json "${full_path}"; then
-            log_error "Malformed JSON in specification file: ${rel_path}"
-            drift_detected=1
-            continue
+        local expected
+        expected="$(jq -r --arg path "${path}" '.artifacts[] | select(.local_path == $path) | .local_sha256' "${PROVENANCE_FILE}")"
+        if [[ "$(sha256_file "${file}")" != "${expected}" ]]; then
+            printf 'local provenance digest mismatch: %s\n' "${path}" >&2
+            failed=1
         fi
-    done < <(get_managed_files)
-
-    # 2. Check against manifest
-    if [[ ! -f "${MANIFEST_FILE}" ]]; then
-        log_warn "Checksum manifest ${MANIFEST_FILE} does not exist. Generating initial manifest..."
-        generate_manifest
-        log_success "Verification passed (manifest created)."
-        return 0
+    done < <(managed_files)
+    if ! (cd "${ROOT_DIR}" && sha256sum --check --strict "${MANIFEST_FILE}"); then
+        failed=1
     fi
-
-    log_info "Verifying SHA-256 checksums against manifest..."
-    while IFS= read -r line; do
-        [[ -z "${line}" || "${line}" =~ ^# ]] && continue
-        local expected_csum
-        local rel_path
-        expected_csum=$(echo "${line}" | awk '{print $1}')
-        rel_path=$(echo "${line}" | awk '{print $2}')
-        local full_path="${ROOT_DIR}/${rel_path}"
-
-        if [[ ! -f "${full_path}" ]]; then
-            log_error "Manifest references missing file: ${rel_path}"
-            drift_detected=1
-            continue
-        fi
-
-        local actual_csum
-        actual_csum=$(calc_sha256 "${full_path}")
-
-        if [[ "${expected_csum}" != "${actual_csum}" ]]; then
-            log_error "DRIFT DETECTED in ${rel_path}!"
-            log_error "  Expected SHA-256: ${expected_csum}"
-            log_error "  Actual SHA-256:   ${actual_csum}"
-            drift_detected=1
-        else
-            echo -e "  [OK] ${rel_path} (${actual_csum:0:12}...)"
-        fi
-    done < "${MANIFEST_FILE}"
-
-    if [[ ${drift_detected} -ne 0 ]]; then
-        log_error "Specification drift check FAILED! Local files have been modified or are corrupted."
+    if [[ "${failed}" -ne 0 ]]; then
         return 1
     fi
-
-    log_success "All canonical Lexicons and RFC schemas match manifest. Zero drift detected."
-    return 0
+    printf 'local specification integrity verified\n'
 }
 
-# Sync mode: Download latest specs if online, format, and regenerate manifest
-sync_specs() {
-    log_info "Synchronizing canonical Lexicons and RFC schemas from upstream..."
-
-    local curl_cmd="curl -fsSL --connect-timeout 5 --max-time 15"
-    local sync_errors=0
-
-    # Ensure target directories exist
-    mkdir -p "${LEXICONS_DIR}/com/atproto/identity"
-    mkdir -p "${LEXICONS_DIR}/com/atproto/server"
-    mkdir -p "${SCHEMAS_DIR}"
-
-    # Helper function to fetch file with fallback
-    fetch_file() {
-        local url="$1"
-        local dest="$2"
-        local desc="$3"
-        local tmp="${dest}.download.$$"
-
-        log_info "Fetching ${desc}..."
-        if ${curl_cmd} "${url}" -o "${tmp}" 2>/dev/null; then
-            if validate_json "${tmp}"; then
-                format_json "${tmp}"
-                mv "${tmp}" "${dest}"
-                log_success "Updated ${desc} from ${url}"
-            else
-                log_warn "Downloaded ${desc} is invalid JSON; preserving existing local version."
-                rm -f "${tmp}"
-                sync_errors=$((sync_errors + 1))
-            fi
-        else
-            log_warn "Network request failed for ${desc} (${url}). Using local fallback."
-            rm -f "${tmp}"
-            if [[ ! -f "${dest}" ]]; then
-                log_error "No local fallback available for ${dest}!"
-                sync_errors=$((sync_errors + 1))
-            fi
-        fi
-    }
-
-    fetch_file "${RESOLVE_HANDLE_URL}" "${LEXICONS_DIR}/com/atproto/identity/resolveHandle.json" "com.atproto.identity.resolveHandle"
-    fetch_file "${CREATE_SESSION_URL}" "${LEXICONS_DIR}/com/atproto/server/createSession.json" "com.atproto.server.createSession"
-    fetch_file "${REFRESH_SESSION_URL}" "${LEXICONS_DIR}/com/atproto/server/refreshSession.json" "com.atproto.server.refreshSession"
-
-    # Format existing schemas
-    while IFS= read -r rel_path; do
-        local full_path="${ROOT_DIR}/${rel_path}"
-        if [[ -f "${full_path}" ]]; then
-            format_json "${full_path}"
-        fi
-    done < <(get_managed_files)
-
-    # Regenerate checksum manifest
-    generate_manifest
-
-    if [[ ${sync_errors} -gt 0 ]]; then
-        log_warn "Sync completed with ${sync_errors} offline/network fallbacks. Local specs preserved."
+fetch_upstream() {
+    local url="$1"
+    local path="$2"
+    local destination="$3"
+    if [[ -n "${SKYAUTH_UPSTREAM_FIXTURE_DIR:-}" ]]; then
+        cp "${SKYAUTH_UPSTREAM_FIXTURE_DIR}/${path}" "${destination}"
     else
-        log_success "Upstream specifications synchronized and verified successfully."
+        curl -fsSL --connect-timeout 10 --max-time 30 "${url}" -o "${destination}"
     fi
 }
 
-show_help() {
-    cat <<EOF
-atproto-oauth-rs Upstream Specification Drift Guard
-
-Usage:
-  $(basename "$0") [command]
-
-Commands:
-  --check, --verify    Verify local specifications against checksum manifest and JSON schema syntax
-  --sync               Download latest upstream lexicons/schemas and update checksum manifest
-  --generate-manifest  Force regenerate the checksum manifest from current local files
-  --help, -h           Show this help message
-
-Exit Codes:
-  0   All specifications valid and matching manifest (no drift)
-  1   Drift detected, missing files, or invalid JSON syntax
-EOF
+check_upstream() {
+    verify_local
+    local temporary_directory
+    temporary_directory="$(mktemp -d)"
+    trap 'rm -r -- "${temporary_directory}"' RETURN
+    local failed=0
+    while IFS=$'\t' read -r path url; do
+        local raw="${temporary_directory}/raw.json"
+        local normalized="${temporary_directory}/normalized.json"
+        if ! fetch_upstream "${url}" "${path}" "${raw}" || ! validate_json "${raw}"; then
+            printf 'failed to fetch valid upstream JSON: %s\n' "${path}" >&2
+            failed=1
+            continue
+        fi
+        normalize_json "${raw}" >"${normalized}"
+        if ! cmp -s "${ROOT_DIR}/${path}" "${normalized}"; then
+            printf 'upstream specification drift detected: %s\n' "${path}" >&2
+            failed=1
+        fi
+    done < <(jq -r '.artifacts[] | select(.kind == "upstream") | [.local_path, .source_url] | @tsv' "${PROVENANCE_FILE}")
+    rm -r -- "${temporary_directory}"
+    trap - RETURN
+    if [[ "${failed}" -ne 0 ]]; then
+        return 1
+    fi
+    printf 'upstream specification freshness verified\n'
 }
 
-# Main Dispatcher
-main() {
-    local cmd="${1:---check}"
-
-    case "${cmd}" in
-        --check|--verify)
-            verify_specs
-            ;;
-        --sync)
-            sync_specs
-            ;;
-        --generate-manifest)
-            generate_manifest
-            ;;
-        --help|-h)
-            show_help
-            ;;
-        *)
-            log_error "Unknown command: ${cmd}"
-            show_help
-            exit 1
-            ;;
-    esac
+sync_upstream() {
+    local temporary_directory
+    temporary_directory="$(mktemp -d)"
+    trap 'rm -r -- "${temporary_directory}"' RETURN
+    local commit
+    local upstream_date
+    if [[ -n "${SKYAUTH_UPSTREAM_FIXTURE_DIR:-}" ]]; then
+        commit="fixture"
+        upstream_date="1970-01-01T00:00:00Z"
+    else
+        commit="$(git ls-remote https://github.com/bluesky-social/atproto.git refs/heads/main | awk '{print $1}')"
+        upstream_date="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://api.github.com/repos/bluesky-social/atproto/commits/${commit}" | jq -r '.commit.committer.date')"
+    fi
+    local retrieved_at
+    retrieved_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local updated="${temporary_directory}/provenance.json"
+    cp "${PROVENANCE_FILE}" "${updated}"
+    while IFS=$'\t' read -r path url; do
+        local raw="${temporary_directory}/raw-$(basename "${path}")"
+        local staged="${temporary_directory}/staged/${path}"
+        mkdir -p "$(dirname "${staged}")"
+        fetch_upstream "${url}" "${path}" "${raw}"
+        validate_json "${raw}"
+        normalize_json "${raw}" >"${staged}"
+        local raw_digest
+        raw_digest="$(sha256_file "${raw}")"
+        local local_digest
+        local_digest="$(sha256_file "${staged}")"
+        local next="${temporary_directory}/next.json"
+        jq \
+            --arg path "${path}" \
+            --arg commit "${commit}" \
+            --arg upstream_date "${upstream_date}" \
+            --arg raw_digest "${raw_digest}" \
+            --arg local_digest "${local_digest}" \
+            '(.artifacts[] | select(.local_path == $path)) |= (.upstream_commit = $commit | .upstream_date = $upstream_date | .upstream_sha256 = $raw_digest | .local_sha256 = $local_digest)' \
+            "${updated}" >"${next}"
+        mv "${next}" "${updated}"
+    done < <(jq -r '.artifacts[] | select(.kind == "upstream") | [.local_path, .source_url] | @tsv' "${PROVENANCE_FILE}")
+    while IFS= read -r path; do
+        cp "${temporary_directory}/staged/${path}" "${ROOT_DIR}/${path}"
+    done < <(jq -r '.artifacts[] | select(.kind == "upstream") | .local_path' "${PROVENANCE_FILE}")
+    jq --arg retrieved_at "${retrieved_at}" '.retrieved_at = $retrieved_at' "${updated}" >"${PROVENANCE_FILE}"
+    generate_manifest
+    rm -r -- "${temporary_directory}"
+    trap - RETURN
+    verify_local
 }
 
-main "$@"
+case "${1:---verify}" in
+    --verify|--check)
+        verify_local
+        ;;
+    --check-upstream)
+        check_upstream
+        ;;
+    --sync)
+        sync_upstream
+        ;;
+    --generate-manifest)
+        generate_manifest
+        ;;
+    --help|-h)
+        printf '%s\n' 'usage: sync_specs.sh --verify|--check-upstream|--sync|--generate-manifest'
+        ;;
+    *)
+        printf 'unknown command: %s\n' "$1" >&2
+        exit 2
+        ;;
+esac

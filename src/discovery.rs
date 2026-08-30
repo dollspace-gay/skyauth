@@ -3,8 +3,8 @@
 //! Implements multi-stage discovery for the AT Protocol:
 //! 1. **Protected Resource Discovery (RFC 9728)**: Discovers authorization servers
 //!    guarding the user's Personal Data Server (PDS) via `/.well-known/oauth-protected-resource`.
-//! 2. **Authorization Server Discovery (RFC 8414 / OIDC)**: Discovers OAuth 2.0 endpoints
-//!    via `/.well-known/oauth-authorization-server` with fallback to `/.well-known/openid-configuration`.
+//! 2. **Authorization Server Discovery (RFC 8414)**: Discovers OAuth endpoints through the
+//!    authorization-server well-known document required by the AT Protocol profile.
 //! 3. **Mandatory Security Validation**: Asserts issuer origin equality, `ES256` DPoP support,
 //!    `S256` PKCE enforcement, and PAR endpoint availability.
 //! 4. **End-to-End Discovery Pipeline**: Integrates identity resolution and SSRF defense
@@ -15,6 +15,8 @@ use url::Url;
 
 use crate::error::{DiscoveryError, SsrfError};
 use crate::identity::IdentityResolver;
+use crate::policy::metadata_profile_accepts;
+use crate::scope::ScopeSet;
 use crate::ssrf::SsrfFilter;
 
 /// RFC 9728 OAuth 2.0 Protected Resource Metadata.
@@ -77,6 +79,282 @@ pub struct AuthorizationServerMetadata {
     /// Whether client ID metadata document resolution is supported.
     #[serde(default)]
     pub client_id_metadata_document_supported: bool,
+    /// Whether request URI registration is required.
+    #[serde(default)]
+    pub require_request_uri_registration: Option<bool>,
+}
+
+/// AT Protocol OAuth client metadata document for a public client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMetadataDocument {
+    /// Exact URL identifying and locating this metadata document.
+    pub client_id: String,
+    /// Web or native application classification.
+    #[serde(default = "default_application_type")]
+    pub application_type: String,
+    /// Registered redirect URIs.
+    pub redirect_uris: Vec<String>,
+    /// Declared OAuth grant types.
+    pub grant_types: Vec<String>,
+    /// Declared OAuth response types.
+    pub response_types: Vec<String>,
+    /// Maximum OAuth scope set the client may request.
+    pub scope: String,
+    /// Token endpoint authentication method.
+    pub token_endpoint_auth_method: String,
+    /// Whether access tokens must be DPoP-bound.
+    pub dpop_bound_access_tokens: bool,
+    /// Embedded public client-authentication key set.
+    #[serde(default)]
+    pub jwks: Option<serde_json::Value>,
+    /// URL of a public client-authentication key set.
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+}
+
+fn default_application_type() -> String {
+    "web".to_string()
+}
+
+/// Fetches and validates a public AT Protocol client metadata document.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] for transport, JSON, identity, redirect, or profile failures.
+pub async fn fetch_client_metadata_document(
+    ssrf_filter: &SsrfFilter,
+    client_id: &str,
+) -> Result<ClientMetadataDocument, DiscoveryError> {
+    let client_url = Url::parse(client_id).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid client ID URL: {error}"))
+    })?;
+    ssrf_filter.validate_url(&client_url)?;
+    if client_url.port().is_some() {
+        return Err(DiscoveryError::ProfileViolation(
+            "client ID URL contains a port".to_string(),
+        ));
+    }
+    let document: ClientMetadataDocument = ssrf_filter
+        .safe_get_json_exact(client_id, 1_048_576)
+        .await
+        .map_err(DiscoveryError::Ssrf)?;
+    validate_client_metadata_document(&document, client_id)?;
+    Ok(document)
+}
+
+/// Resolves a public client metadata document, including the localhost virtual profile.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] for invalid virtual metadata or failed remote resolution.
+pub async fn resolve_client_metadata_document(
+    ssrf_filter: &SsrfFilter,
+    client_id: &str,
+) -> Result<ClientMetadataDocument, DiscoveryError> {
+    let url = Url::parse(client_id).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid client ID URL: {error}"))
+    })?;
+    if url.scheme() == "http" && url.host_str() == Some("localhost") {
+        virtual_loopback_client_metadata(client_id)
+    } else {
+        fetch_client_metadata_document(ssrf_filter, client_id).await
+    }
+}
+
+fn virtual_loopback_client_metadata(
+    client_id: &str,
+) -> Result<ClientMetadataDocument, DiscoveryError> {
+    let url = Url::parse(client_id).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid localhost client ID: {error}"))
+    })?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("localhost")
+        || url.port().is_some()
+        || url.path() != "/"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(DiscoveryError::ProfileViolation(
+            "invalid localhost client ID".to_string(),
+        ));
+    }
+    let mut redirects = Vec::new();
+    let mut scope = None;
+    for (name, value) in url.query_pairs() {
+        match name.as_ref() {
+            "redirect_uri" => redirects.push(value.into_owned()),
+            "scope" if scope.is_none() => scope = Some(value.into_owned()),
+            "scope" => {
+                return Err(DiscoveryError::ProfileViolation(
+                    "localhost client ID repeats scope".to_string(),
+                ));
+            }
+            _ => {
+                return Err(DiscoveryError::ProfileViolation(
+                    "localhost client ID contains an unknown parameter".to_string(),
+                ));
+            }
+        }
+    }
+    if redirects.is_empty() {
+        redirects = vec!["http://127.0.0.1/".to_string(), "http://[::1]/".to_string()];
+    }
+    let document = ClientMetadataDocument {
+        client_id: client_id.to_string(),
+        application_type: "native".to_string(),
+        redirect_uris: redirects,
+        grant_types: vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
+        response_types: vec!["code".to_string()],
+        scope: scope.unwrap_or_else(|| "atproto".to_string()),
+        token_endpoint_auth_method: "none".to_string(),
+        dpop_bound_access_tokens: true,
+        jwks: None,
+        jwks_uri: None,
+    };
+    validate_virtual_client_metadata(&document)?;
+    Ok(document)
+}
+
+/// Validates a parsed AT Protocol public-client metadata document.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] when a mandatory profile constraint is not met.
+pub fn validate_client_metadata_document(
+    document: &ClientMetadataDocument,
+    fetched_from: &str,
+) -> Result<(), DiscoveryError> {
+    if document.client_id != fetched_from {
+        return Err(DiscoveryError::ProfileViolation(
+            "client metadata identifier does not match its fetch URL".to_string(),
+        ));
+    }
+    let client_url = Url::parse(fetched_from).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid client ID URL: {error}"))
+    })?;
+    if client_url.scheme() != "https"
+        || client_url.host_str().is_none()
+        || client_url.port().is_some()
+        || !client_url.username().is_empty()
+        || client_url.password().is_some()
+        || client_url.fragment().is_some()
+    {
+        return Err(DiscoveryError::ProfileViolation(
+            "client ID is not a canonical HTTPS metadata URL".to_string(),
+        ));
+    }
+    if !matches!(document.application_type.as_str(), "web" | "native") {
+        return Err(DiscoveryError::ProfileViolation(
+            "unknown client application type".to_string(),
+        ));
+    }
+    if document.redirect_uris.is_empty() {
+        return Err(DiscoveryError::ProfileViolation(
+            "client metadata has no redirect URI".to_string(),
+        ));
+    }
+    for redirect in &document.redirect_uris {
+        validate_client_redirect(redirect, &document.application_type, &client_url)?;
+    }
+    require_value(&document.grant_types, "authorization_code", "grant_types")?;
+    require_value(&document.response_types, "code", "response_types")?;
+    ScopeSet::parse(&document.scope).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid declared scope set: {error}"))
+    })?;
+    if !document.dpop_bound_access_tokens {
+        return Err(DiscoveryError::ProfileViolation(
+            "client does not require DPoP-bound access tokens".to_string(),
+        ));
+    }
+    if document.token_endpoint_auth_method != "none" {
+        return Err(DiscoveryError::ProfileViolation(
+            "only public clients are supported".to_string(),
+        ));
+    }
+    if document.jwks.is_some() || document.jwks_uri.is_some() {
+        return Err(DiscoveryError::ProfileViolation(
+            "public client metadata includes client-authentication keys".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_client_redirect(
+    value: &str,
+    application_type: &str,
+    client_id: &Url,
+) -> Result<(), DiscoveryError> {
+    let redirect = Url::parse(value).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid redirect URI: {error}"))
+    })?;
+    if !redirect.username().is_empty()
+        || redirect.password().is_some()
+        || redirect.fragment().is_some()
+    {
+        return Err(DiscoveryError::ProfileViolation(
+            "redirect URI contains prohibited components".to_string(),
+        ));
+    }
+    let valid = match application_type {
+        "web" => redirect.scheme() == "https" && redirect.host_str().is_some(),
+        "native" => {
+            (redirect.scheme() == "http"
+                && redirect
+                    .host_str()
+                    .is_some_and(|host| matches!(host, "127.0.0.1" | "::1")))
+                || (redirect.scheme() == "https" && redirect.origin() == client_id.origin())
+                || valid_native_custom_redirect(value, &redirect, client_id)
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(DiscoveryError::ProfileViolation(
+            "redirect URI does not match the application type".to_string(),
+        ))
+    }
+}
+
+fn valid_native_custom_redirect(value: &str, redirect: &Url, client_id: &Url) -> bool {
+    let Some(host) = client_id.host_str() else {
+        return false;
+    };
+    let expected_scheme = host.split('.').rev().collect::<Vec<_>>().join(".");
+    redirect.scheme() == expected_scheme
+        && redirect.host_str().is_none()
+        && value.starts_with(&format!("{expected_scheme}:/"))
+        && !value.starts_with(&format!("{expected_scheme}://"))
+}
+
+fn validate_virtual_client_metadata(
+    document: &ClientMetadataDocument,
+) -> Result<(), DiscoveryError> {
+    ScopeSet::parse(&document.scope).map_err(|error| {
+        DiscoveryError::ProfileViolation(format!("invalid localhost scope set: {error}"))
+    })?;
+    for redirect in &document.redirect_uris {
+        let url = Url::parse(redirect).map_err(|error| {
+            DiscoveryError::ProfileViolation(format!("invalid localhost redirect URI: {error}"))
+        })?;
+        if url.scheme() != "http"
+            || !url
+                .host_str()
+                .is_some_and(|host| matches!(host, "127.0.0.1" | "::1"))
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(DiscoveryError::ProfileViolation(
+                "invalid localhost redirect URI".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Fully discovered and validated OAuth endpoints bundle.
@@ -115,13 +393,16 @@ pub async fn fetch_protected_resource_metadata(
     ssrf_filter: &SsrfFilter,
     pds_endpoint: &str,
 ) -> Result<ProtectedResourceMetadata, DiscoveryError> {
-    let url = format!(
-        "{}/.well-known/oauth-protected-resource",
-        pds_endpoint.trim_end_matches('/')
-    );
+    let resource_url = Url::parse(pds_endpoint).map_err(|error| {
+        DiscoveryError::ProtectedResourceDiscoveryFailed(format!(
+            "Invalid protected resource identifier '{pds_endpoint}': {error}"
+        ))
+    })?;
+    ssrf_filter.validate_url(&resource_url)?;
+    let url = protected_resource_metadata_url(&resource_url);
 
     let meta: ProtectedResourceMetadata = ssrf_filter
-        .safe_get_json(&url, 1_048_576)
+        .safe_get_json_exact(url.as_str(), 1_048_576)
         .await
         .map_err(|e| match e {
             SsrfError::HttpStatus(status, msg) => DiscoveryError::ProtectedResourceDiscoveryFailed(
@@ -133,21 +414,33 @@ pub async fn fetch_protected_resource_metadata(
             other => DiscoveryError::Ssrf(other),
         })?;
 
-    if meta.authorization_servers.is_empty() {
+    let expected_resource = normalize_resource_identifier(&resource_url);
+    if meta.resource != expected_resource {
+        return Err(DiscoveryError::ProfileViolation(format!(
+            "protected resource identifier '{}' does not match '{expected_resource}'",
+            meta.resource
+        )));
+    }
+
+    if meta.authorization_servers.len() != 1 {
         return Err(DiscoveryError::MissingAuthorizationServers(
             pds_endpoint.to_string(),
         ));
     }
 
+    validate_origin_identifier_with_local(
+        &meta.authorization_servers[0],
+        ssrf_filter.allow_insecure_localhost,
+    )?;
+
     Ok(meta)
 }
 
-/// Fetches and parses RFC 8414 Authorization Server Metadata with OIDC fallback.
+/// Fetches and parses RFC 8414 Authorization Server Metadata.
 ///
 /// # Invariants
-/// 1. Tries primary endpoint: `<auth_server>/.well-known/oauth-authorization-server`.
-/// 2. If primary returns 404, falls back to: `<auth_server>/.well-known/openid-configuration`.
-/// 3. Validates mandatory security invariants: `issuer` matching, `ES256` DPoP support,
+/// 1. Fetches `<auth_server>/.well-known/oauth-authorization-server`.
+/// 2. Validates mandatory security invariants: `issuer` matching, `ES256` DPoP support,
 ///    `S256` PKCE challenge method, and non-empty PAR, token, and authorization endpoints.
 ///
 /// # Errors
@@ -159,45 +452,30 @@ pub async fn fetch_auth_server_metadata(
     ssrf_filter: &SsrfFilter,
     auth_server_url: &str,
 ) -> Result<AuthorizationServerMetadata, DiscoveryError> {
-    let base = auth_server_url.trim_end_matches('/');
+    let base = validate_origin_identifier_with_local(
+        auth_server_url,
+        ssrf_filter.allow_insecure_localhost,
+    )?;
     let primary_url = format!("{base}/.well-known/oauth-authorization-server");
 
-    let meta: AuthorizationServerMetadata = match ssrf_filter
-        .safe_get_json(&primary_url, 1_048_576)
+    let meta: AuthorizationServerMetadata = ssrf_filter
+        .safe_get_json_exact(&primary_url, 1_048_576)
         .await
-    {
-        Ok(m) => m,
-        Err(SsrfError::HttpStatus(404, _)) => {
-            let fallback_url = format!("{base}/.well-known/openid-configuration");
-            ssrf_filter
-                .safe_get_json(&fallback_url, 1_048_576)
-                .await
-                .map_err(|e| match e {
-                    SsrfError::HttpStatus(status, msg) => {
-                        DiscoveryError::AuthServerDiscoveryFailed(format!(
-                            "HTTP {status} fetching fallback authorization server metadata from {fallback_url}: {msg}"
-                        ))
-                    }
-                    SsrfError::Json(err) => DiscoveryError::AuthServerDiscoveryFailed(format!(
-                        "Invalid JSON in fallback authorization server metadata from {fallback_url}: {err}"
-                    )),
-                    other => DiscoveryError::Ssrf(other),
-                })?
-        }
-        Err(SsrfError::HttpStatus(status, msg)) => {
-            return Err(DiscoveryError::AuthServerDiscoveryFailed(format!(
-                "HTTP {status} fetching authorization server metadata from {primary_url}: {msg}"
-            )));
-        }
-        Err(SsrfError::Json(err)) => {
-            return Err(DiscoveryError::AuthServerDiscoveryFailed(format!(
+        .map_err(|e| match e {
+            SsrfError::HttpStatus(status, msg) => DiscoveryError::AuthServerDiscoveryFailed(
+                format!("HTTP {status} fetching authorization server metadata from {primary_url}: {msg}"),
+            ),
+            SsrfError::Json(err) => DiscoveryError::AuthServerDiscoveryFailed(format!(
                 "Invalid JSON in authorization server metadata from {primary_url}: {err}"
-            )));
-        }
-        Err(other) => return Err(DiscoveryError::Ssrf(other)),
-    };
+            )),
+            other => DiscoveryError::Ssrf(other),
+        })?;
 
-    validate_auth_server_capabilities(&meta, auth_server_url)?;
+    validate_auth_server_capabilities_with_local(
+        &meta,
+        auth_server_url,
+        ssrf_filter.allow_insecure_localhost,
+    )?;
     Ok(meta)
 }
 
@@ -206,9 +484,18 @@ pub fn validate_auth_server_capabilities(
     meta: &AuthorizationServerMetadata,
     auth_server_url: &str,
 ) -> Result<(), DiscoveryError> {
-    // 1. Issuer Origin Equality Check
-    let expected_norm = auth_server_url.trim().trim_end_matches('/');
-    let actual_norm = meta.issuer.trim().trim_end_matches('/');
+    validate_auth_server_capabilities_with_local(meta, auth_server_url, false)
+}
+
+fn validate_auth_server_capabilities_with_local(
+    meta: &AuthorizationServerMetadata,
+    auth_server_url: &str,
+    allow_insecure_localhost: bool,
+) -> Result<(), DiscoveryError> {
+    let expected_norm =
+        validate_origin_identifier_with_local(auth_server_url, allow_insecure_localhost)?;
+    let actual_norm =
+        validate_origin_identifier_with_local(&meta.issuer, allow_insecure_localhost)?;
     if expected_norm != actual_norm {
         return Err(DiscoveryError::IssuerMismatch {
             expected: auth_server_url.to_string(),
@@ -216,46 +503,35 @@ pub fn validate_auth_server_capabilities(
         });
     }
 
-    // 2. PAR Endpoint Validation
     if meta.pushed_authorization_request_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingParEndpoint(
             auth_server_url.to_string(),
         ));
     }
-    if let Err(e) = Url::parse(&meta.pushed_authorization_request_endpoint) {
-        return Err(DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid PAR endpoint URL '{}': {e}",
-            meta.pushed_authorization_request_endpoint
-        )));
-    }
+    validate_endpoint_url(
+        &meta.pushed_authorization_request_endpoint,
+        "PAR",
+        allow_insecure_localhost,
+    )?;
 
-    // 3. Token Endpoint Validation
     if meta.token_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingTokenEndpoint(
             auth_server_url.to_string(),
         ));
     }
-    if let Err(e) = Url::parse(&meta.token_endpoint) {
-        return Err(DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid token endpoint URL '{}': {e}",
-            meta.token_endpoint
-        )));
-    }
+    validate_endpoint_url(&meta.token_endpoint, "token", allow_insecure_localhost)?;
 
-    // 4. Authorization Endpoint Validation
     if meta.authorization_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingAuthorizationEndpoint(
             auth_server_url.to_string(),
         ));
     }
-    if let Err(e) = Url::parse(&meta.authorization_endpoint) {
-        return Err(DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid authorization endpoint URL '{}': {e}",
-            meta.authorization_endpoint
-        )));
-    }
+    validate_endpoint_url(
+        &meta.authorization_endpoint,
+        "authorization",
+        allow_insecure_localhost,
+    )?;
 
-    // 5. DPoP ES256 Algorithm Enforcement
     if !meta
         .dpop_signing_alg_values_supported
         .iter()
@@ -266,7 +542,6 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
-    // 6. PKCE S256 Challenge Method Enforcement
     if !meta
         .code_challenge_methods_supported
         .iter()
@@ -277,7 +552,199 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
+    require_value(
+        &meta.response_types_supported,
+        "code",
+        "response_types_supported",
+    )?;
+    require_value(
+        &meta.grant_types_supported,
+        "authorization_code",
+        "grant_types_supported",
+    )?;
+    require_value(
+        &meta.grant_types_supported,
+        "refresh_token",
+        "grant_types_supported",
+    )?;
+    require_value(
+        &meta.token_endpoint_auth_methods_supported,
+        "none",
+        "token_endpoint_auth_methods_supported",
+    )?;
+    require_value(
+        &meta.token_endpoint_auth_methods_supported,
+        "private_key_jwt",
+        "token_endpoint_auth_methods_supported",
+    )?;
+    require_value(
+        &meta.token_endpoint_auth_signing_alg_values_supported,
+        "ES256",
+        "token_endpoint_auth_signing_alg_values_supported",
+    )?;
+    if meta
+        .token_endpoint_auth_signing_alg_values_supported
+        .iter()
+        .any(|value| value == "none")
+    {
+        return Err(DiscoveryError::ProfileViolation(
+            "token endpoint signing algorithms include 'none'".to_string(),
+        ));
+    }
+    require_value(&meta.scopes_supported, "atproto", "scopes_supported")?;
+    if !meta.authorization_response_iss_parameter_supported {
+        return Err(DiscoveryError::ProfileViolation(
+            "authorization response issuer parameter is not supported".to_string(),
+        ));
+    }
+    if !meta.require_pushed_authorization_requests {
+        return Err(DiscoveryError::ProfileViolation(
+            "pushed authorization requests are not required".to_string(),
+        ));
+    }
+    if !meta.client_id_metadata_document_supported {
+        return Err(DiscoveryError::ProfileViolation(
+            "client ID metadata documents are not supported".to_string(),
+        ));
+    }
+    if meta.require_request_uri_registration == Some(false) {
+        return Err(DiscoveryError::ProfileViolation(
+            "request URI registration is disabled".to_string(),
+        ));
+    }
+
+    let accepted = metadata_profile_accepts(
+        expected_norm == actual_norm,
+        true,
+        meta.dpop_signing_alg_values_supported
+            .iter()
+            .any(|value| value == "ES256"),
+        meta.code_challenge_methods_supported
+            .iter()
+            .any(|value| value == "S256"),
+        meta.response_types_supported
+            .iter()
+            .any(|value| value == "code"),
+        meta.grant_types_supported
+            .iter()
+            .any(|value| value == "authorization_code"),
+        meta.grant_types_supported
+            .iter()
+            .any(|value| value == "refresh_token"),
+        ["none", "private_key_jwt"].iter().all(|required| {
+            meta.token_endpoint_auth_methods_supported
+                .iter()
+                .any(|value| value == required)
+        }),
+        meta.token_endpoint_auth_signing_alg_values_supported
+            .iter()
+            .any(|value| value == "ES256")
+            && !meta
+                .token_endpoint_auth_signing_alg_values_supported
+                .iter()
+                .any(|value| value == "none"),
+        meta.scopes_supported.iter().any(|value| value == "atproto"),
+        meta.authorization_response_iss_parameter_supported,
+        meta.require_pushed_authorization_requests,
+        meta.client_id_metadata_document_supported,
+        meta.require_request_uri_registration.unwrap_or(true),
+    );
+    if !accepted {
+        return Err(DiscoveryError::ProfileViolation(
+            "authorization server metadata does not satisfy the AT Protocol profile".to_string(),
+        ));
+    }
+
     Ok(())
+}
+
+fn protected_resource_metadata_url(resource: &Url) -> Url {
+    let mut metadata_url = resource.clone();
+    let resource_path = resource.path().trim_start_matches('/');
+    let metadata_path = if resource_path.is_empty() {
+        "/.well-known/oauth-protected-resource".to_string()
+    } else {
+        format!("/.well-known/oauth-protected-resource/{resource_path}")
+    };
+    metadata_url.set_path(&metadata_path);
+    metadata_url
+}
+
+fn normalize_resource_identifier(resource: &Url) -> String {
+    let serialized = resource.as_str();
+    if resource.path() == "/" && resource.query().is_none() {
+        serialized.trim_end_matches('/').to_string()
+    } else {
+        serialized.to_string()
+    }
+}
+
+fn validate_origin_identifier_with_local(
+    value: &str,
+    allow_insecure_localhost: bool,
+) -> Result<String, DiscoveryError> {
+    let url = Url::parse(value).map_err(|error| {
+        DiscoveryError::InvalidEndpointUrl(format!("Invalid origin '{value}': {error}"))
+    })?;
+    let is_local_http = allow_insecure_localhost
+        && url.scheme() == "http"
+        && url
+            .host_str()
+            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    if (url.scheme() != "https" && !is_local_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(DiscoveryError::InvalidEndpointUrl(format!(
+            "Expected an HTTPS origin, got '{value}'"
+        )));
+    }
+    let origin = url.origin().ascii_serialization();
+    if value.trim().trim_end_matches('/') != origin {
+        return Err(DiscoveryError::InvalidEndpointUrl(format!(
+            "Origin is not canonical: '{value}'"
+        )));
+    }
+    Ok(origin)
+}
+
+fn validate_endpoint_url(
+    value: &str,
+    name: &str,
+    allow_insecure_localhost: bool,
+) -> Result<(), DiscoveryError> {
+    let url = Url::parse(value).map_err(|error| {
+        DiscoveryError::InvalidEndpointUrl(format!("Invalid {name} endpoint '{value}': {error}"))
+    })?;
+    let is_local_http = allow_insecure_localhost
+        && url.scheme() == "http"
+        && url
+            .host_str()
+            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    if (url.scheme() != "https" && !is_local_http)
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(DiscoveryError::InvalidEndpointUrl(format!(
+            "Invalid {name} endpoint '{value}'"
+        )));
+    }
+    Ok(())
+}
+
+fn require_value(values: &[String], required: &str, field: &str) -> Result<(), DiscoveryError> {
+    if values.iter().any(|value| value == required) {
+        Ok(())
+    } else {
+        Err(DiscoveryError::ProfileViolation(format!(
+            "{field} is missing '{required}'"
+        )))
+    }
 }
 
 /// Executes the complete AT Protocol discovery pipeline for a user handle or DID.
@@ -357,11 +824,15 @@ mod tests {
                 "authorization_code".to_string(),
                 "refresh_token".to_string(),
             ],
-            token_endpoint_auth_methods_supported: vec!["none".to_string()],
+            token_endpoint_auth_methods_supported: vec![
+                "none".to_string(),
+                "private_key_jwt".to_string(),
+            ],
             token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,
             client_id_metadata_document_supported: true,
+            require_request_uri_registration: Some(true),
         };
 
         assert!(validate_auth_server_capabilities(&meta, "https://auth.example.com").is_ok());
@@ -384,6 +855,7 @@ mod tests {
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,
             client_id_metadata_document_supported: true,
+            require_request_uri_registration: Some(true),
         };
 
         assert!(matches!(
@@ -409,6 +881,7 @@ mod tests {
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,
             client_id_metadata_document_supported: true,
+            require_request_uri_registration: Some(true),
         };
 
         assert!(matches!(
@@ -434,6 +907,7 @@ mod tests {
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,
             client_id_metadata_document_supported: true,
+            require_request_uri_registration: Some(true),
         };
 
         assert!(matches!(

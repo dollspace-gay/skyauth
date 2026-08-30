@@ -12,7 +12,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::error::{IdentityError, SsrfError};
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{collect_limited, SafeHttpClient, SsrfFilter};
 
 /// Standard PLC directory endpoint.
 pub const DEFAULT_PLC_DIRECTORY: &str = "https://plc.directory";
@@ -90,11 +90,28 @@ impl DidDocument {
     /// via its `alsoKnownAs` list (e.g. `at://<handle>`).
     #[must_use]
     pub fn matches_handle(&self, handle: &str) -> bool {
-        let normalized = handle.trim().trim_start_matches('@').to_ascii_lowercase();
-        let expected_uri = format!("at://{normalized}");
-        self.also_known_as
-            .iter()
-            .any(|aka| aka.to_ascii_lowercase() == expected_uri)
+        let Ok(expected) = normalize_handle(handle) else {
+            return false;
+        };
+        self.also_known_as.iter().any(|value| {
+            let Some(candidate) = value.strip_prefix("at://") else {
+                return false;
+            };
+            !candidate.contains(['/', '?', '#'])
+                && normalize_handle(candidate).is_ok_and(|claimed| claimed == expected)
+        })
+    }
+
+    /// Returns the first syntactically valid handle claimed by the document.
+    #[must_use]
+    pub fn claimed_handle(&self) -> Option<String> {
+        self.also_known_as.iter().find_map(|value| {
+            let candidate = value.strip_prefix("at://")?;
+            if candidate.contains(['/', '?', '#']) {
+                return None;
+            }
+            normalize_handle(candidate).ok()
+        })
     }
 
     /// Verifies bidirectional handle linkage against `alsoKnownAs`.
@@ -116,22 +133,38 @@ impl DidDocument {
     ///   `AtprotoPersonalDataServer` is found.
     /// - Returns [`IdentityError::InvalidPdsEndpoint`] if the service endpoint is not a valid URL.
     pub fn extract_pds_endpoint(&self) -> Result<String, IdentityError> {
-        let pds_service = self.service.iter().find(|s| {
-            (s.id == "#atproto_pds" || s.id.ends_with("#atproto_pds"))
-                && s.service_type == "AtprotoPersonalDataServer"
+        self.extract_pds_endpoint_with_filter(&SsrfFilter::default())
+    }
+
+    fn extract_pds_endpoint_with_filter(
+        &self,
+        filter: &SsrfFilter,
+    ) -> Result<String, IdentityError> {
+        let mut pds_services = self.service.iter().filter(|service| {
+            let expected_full_id = format!("{}#atproto_pds", self.id);
+            (service.id == "#atproto_pds" || service.id == expected_full_id)
+                && service.service_type == "AtprotoPersonalDataServer"
         });
+        let pds_service = pds_services.next();
+        if pds_services.next().is_some() {
+            return Err(IdentityError::InvalidPdsEndpoint(
+                "DID document contains multiple PDS services".to_string(),
+            ));
+        }
 
         match pds_service {
             Some(svc) => {
-                let trimmed = svc.service_endpoint.trim().trim_end_matches('/');
-                let parsed = Url::parse(trimmed)
-                    .map_err(|e| IdentityError::InvalidPdsEndpoint(format!("{trimmed}: {e}")))?;
-                if parsed.scheme() != "https" && parsed.scheme() != "http" {
+                let parsed = Url::parse(&svc.service_endpoint).map_err(|error| {
+                    IdentityError::InvalidPdsEndpoint(format!("invalid service URL: {error}"))
+                })?;
+                filter.validate_url(&parsed)?;
+                if parsed.path() != "/" || parsed.query().is_some() {
                     return Err(IdentityError::InvalidPdsEndpoint(format!(
-                        "Invalid scheme in PDS endpoint '{trimmed}'"
+                        "PDS endpoint must be an origin: {}",
+                        svc.service_endpoint
                     )));
                 }
-                Ok(trimmed.to_string())
+                Ok(parsed.origin().ascii_serialization())
             }
             None => Err(IdentityError::MissingPdsEndpoint(self.id.clone())),
         }
@@ -316,8 +349,26 @@ pub trait DnsTxtResolver: std::fmt::Debug + Send + Sync + 'static {
 }
 
 /// Standard DNS resolver querying public DNS-over-HTTPS (DoH) endpoints.
-#[derive(Debug, Clone, Default)]
-pub struct StandardDnsResolver;
+#[derive(Debug, Clone)]
+pub struct StandardDnsResolver {
+    transport: SafeHttpClient,
+}
+
+impl StandardDnsResolver {
+    /// Creates a resolver using the supplied outbound policy.
+    #[must_use]
+    pub fn new(filter: SsrfFilter) -> Self {
+        Self {
+            transport: SafeHttpClient::new(filter),
+        }
+    }
+}
+
+impl Default for StandardDnsResolver {
+    fn default() -> Self {
+        Self::new(SsrfFilter::default())
+    }
+}
 
 impl DnsTxtResolver for StandardDnsResolver {
     fn resolve_txt<'a>(
@@ -327,17 +378,20 @@ impl DnsTxtResolver for StandardDnsResolver {
         Box<dyn std::future::Future<Output = Result<Vec<String>, IdentityError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let doh_url =
-                format!("https://cloudflare-dns.com/dns-query?name={query_name}&type=TXT");
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(4))
-                .build()
+            let mut doh_url = Url::parse("https://cloudflare-dns.com/dns-query")
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
-
-            let resp = client
-                .get(&doh_url)
-                .header(reqwest::header::ACCEPT, "application/dns-json")
-                .send()
+            doh_url
+                .query_pairs_mut()
+                .append_pair("name", query_name)
+                .append_pair("type", "TXT");
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::ACCEPT,
+                reqwest::header::HeaderValue::from_static("application/dns-json"),
+            );
+            let resp = self
+                .transport
+                .send(reqwest::Method::GET, doh_url.as_str(), headers, None)
                 .await
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
 
@@ -358,10 +412,25 @@ impl DnsTxtResolver for StandardDnsResolver {
                 answer: Vec<DohAnswer>,
             }
 
-            let body: DohResponse = resp
-                .json()
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .map(str::trim);
+            if !content_type.is_some_and(|value| {
+                value.eq_ignore_ascii_case("application/dns-json")
+                    || value.eq_ignore_ascii_case("application/json")
+            }) {
+                return Err(IdentityError::Dns(
+                    "DNS response has an unsupported content type".to_string(),
+                ));
+            }
+            let bytes = collect_limited(resp, 65_536)
                 .await
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
+            let body: DohResponse =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Dns(e.to_string()))?;
 
             let records = body
                 .answer
@@ -485,7 +554,9 @@ impl IdentityResolver {
         let records = if let Some(ref resolver) = self.dns_resolver {
             resolver.resolve_txt(&query_name).await?
         } else {
-            StandardDnsResolver.resolve_txt(&query_name).await?
+            StandardDnsResolver::new(self.ssrf_filter)
+                .resolve_txt(&query_name)
+                .await?
         };
 
         let dids: Vec<String> = records
@@ -633,7 +704,7 @@ impl IdentityResolver {
         if trimmed.starts_with("did:") {
             let did = trimmed.to_string();
             let doc = self.resolve_did(&did).await?;
-            let pds_endpoint = doc.extract_pds_endpoint()?;
+            let pds_endpoint = doc.extract_pds_endpoint_with_filter(&self.ssrf_filter)?;
             Ok(ResolvedIdentity {
                 did,
                 handle: None,
@@ -645,7 +716,7 @@ impl IdentityResolver {
             let did = self.resolve_handle(&handle).await?;
             let doc = self.resolve_did(&did).await?;
             doc.verify_handle_bidirectional(&handle)?;
-            let pds_endpoint = doc.extract_pds_endpoint()?;
+            let pds_endpoint = doc.extract_pds_endpoint_with_filter(&self.ssrf_filter)?;
             Ok(ResolvedIdentity {
                 did,
                 handle: Some(handle),

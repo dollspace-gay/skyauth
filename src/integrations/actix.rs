@@ -75,22 +75,23 @@ impl FromRequest for AuthenticatedUser {
 pub fn client_metadata_http_response(
     metadata: &OAuthClientMetadata,
 ) -> Result<HttpResponse, IntegrationError> {
-    let redirect_uris = vec![metadata.redirect_uri.clone()];
-    let grant_types = vec![
-        "authorization_code".to_string(),
-        "refresh_token".to_string(),
-    ];
+    let redirect_uris = vec![metadata.redirect_uri()];
+    let mut grant_types = vec!["authorization_code"];
+    if metadata.refresh_tokens() {
+        grant_types.push("refresh_token");
+    }
     let response_types = vec!["code".to_string()];
 
     let payload = json!({
-        "client_id": metadata.client_id,
-        "client_name": metadata.client_name,
-        "client_uri": metadata.client_id,
+        "client_id": metadata.client_id(),
+        "client_name": metadata.client_name(),
+        "client_uri": metadata.client_id(),
+        "application_type": metadata.application_type().as_str(),
         "redirect_uris": redirect_uris,
         "grant_types": grant_types,
         "response_types": response_types,
-        "scope": metadata.scope,
-        "token_endpoint_auth_method": if metadata.client_secret.is_some() { "client_secret_post" } else { "none" },
+        "scope": metadata.scope(),
+        "token_endpoint_auth_method": "none",
         "dpop_bound_access_tokens": true
     });
 
@@ -107,7 +108,7 @@ pub fn client_metadata_http_response(
 #[must_use]
 pub fn redirect_to_authorization_http_response(auth_req: &AuthorizationRequest) -> HttpResponse {
     HttpResponse::SeeOther()
-        .insert_header((header::LOCATION, auth_req.authorization_url.as_str()))
+        .insert_header((header::LOCATION, auth_req.authorization_url().as_str()))
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .insert_header((header::PRAGMA, "no-cache"))
         .finish()
@@ -117,7 +118,6 @@ pub fn redirect_to_authorization_http_response(auth_req: &AuthorizationRequest) 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 mod tests {
     use super::*;
-    use crate::client::StoredStateEntry;
     use actix_web::test::TestRequest;
     use url::Url;
 
@@ -132,18 +132,18 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(query.code.as_deref(), Some("actix_code_123"));
-        assert_eq!(query.state.as_deref(), Some("actix_state_456"));
-        assert_eq!(query.iss.as_deref(), Some("https://auth.example.com"));
+        assert_eq!(query.expose_code(), Some("actix_code_123"));
+        assert_eq!(query.expose_state(), Some("actix_state_456"));
+        assert_eq!(query.issuer(), Some("https://auth.example.com"));
 
         let params = query.to_callback_params().unwrap();
-        assert_eq!(params.code, "actix_code_123");
-        assert_eq!(params.state, "actix_state_456");
+        assert_eq!(params.expose_code(), "actix_code_123");
+        assert_eq!(params.expose_state(), "actix_state_456");
     }
 
     #[tokio::test]
     async fn test_actix_authenticated_user_from_extensions() {
-        let user = AuthenticatedUser::new("did:plc:bob456", "at_bob_token", "jkt_bob_thumbprint");
+        let user = AuthenticatedUser::new("did:plc:bob456", "jkt_bob_thumbprint");
         let ext = OAuthSessionExtension::new(user.clone());
 
         let req = TestRequest::get().uri("/api/feed").to_http_request();
@@ -155,7 +155,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(extracted.did, "did:plc:bob456");
-        assert_eq!(extracted.access_token, "at_bob_token");
         assert_eq!(extracted.dpop_thumbprint, "jkt_bob_thumbprint");
     }
 
@@ -173,28 +172,13 @@ mod tests {
     #[test]
     fn test_actix_redirect_to_authorization() {
         let url = Url::parse("https://auth.example.com/authorize?req=123").unwrap();
-        let stored_state = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: "test".to_string(),
-            code_verifier: "pkce_123".to_string(),
-            dpop_key: crate::dpop::DPoPKey::generate(),
-            issuer: "https://auth.example.com".to_string(),
-            did: None,
-            handle: None,
-            redirect_uri: "https://app.example.com/callback".to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: "https://auth.example.com/token".to_string(),
-            scopes: "atproto".to_string(),
-            created_at: std::time::SystemTime::now(),
-            expires_in_secs: 300,
-        };
-        let auth_req = AuthorizationRequest {
-            authorization_url: url.clone(),
-            state: "state_123".to_string(),
-            request_uri: "urn:ietf:params:oauth:request_uri:123".to_string(),
-            expires_in: 300,
-            stored_state,
-        };
+        let auth_req = AuthorizationRequest::new(
+            url.clone(),
+            "state_123",
+            "urn:ietf:params:oauth:request_uri:123",
+            300,
+        )
+        .unwrap();
 
         let resp = redirect_to_authorization_http_response(&auth_req);
         assert_eq!(resp.status(), actix_web::http::StatusCode::SEE_OTHER);
