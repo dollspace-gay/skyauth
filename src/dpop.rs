@@ -842,16 +842,18 @@ mod tests {
         let cache = DPoPNonceCache::new();
         let key = DPoPKey::generate();
         let other_key = DPoPKey::generate();
-        cache.set_nonce(&key, "https://pds.example.com", "nonce-1".to_string());
+        let first_nonce = DPoPKey::generate().jwk_thumbprint();
+        let second_nonce = DPoPKey::generate().jwk_thumbprint();
+        cache.set_nonce(&key, "https://pds.example.com", first_nonce.clone());
         assert_eq!(
             cache.get_nonce(&key, "https://pds.example.com"),
-            Some("nonce-1".to_string())
+            Some(first_nonce)
         );
         assert_eq!(cache.get_nonce(&other_key, "https://pds.example.com"), None);
-        cache.set_nonce(&key, "https://pds.example.com", "nonce-2".to_string());
+        cache.set_nonce(&key, "https://pds.example.com", second_nonce.clone());
         assert_eq!(
             cache.get_nonce(&key, "https://pds.example.com"),
-            Some("nonce-2".to_string())
+            Some(second_nonce)
         );
         cache.clear_nonce(&key, "https://pds.example.com");
         assert_eq!(cache.get_nonce(&key, "https://pds.example.com"), None);

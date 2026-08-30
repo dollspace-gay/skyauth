@@ -13,6 +13,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
+permissions:
+  contents: read
+
 jobs:
   upstream-drift:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -100,11 +103,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo package
-      - run: cargo package --list > package-contents.txt
+      - run: cargo package --list > "${RUNNER_TEMP}/package-contents.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: package-contents
-          path: package-contents.txt
+          path: ${{ runner.temp }}/package-contents.txt
 
   formal-verification:
     if: github.event_name != 'schedule'

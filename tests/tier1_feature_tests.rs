@@ -297,16 +297,18 @@ fn test_f5_01_dpop_verifier_valid_proof() {
 fn test_f5_02_dpop_nonce_cache_origin_isolation() {
     let cache = DPoPNonceCache::new();
     let key = DPoPKey::generate();
-    cache.set_nonce(&key, "https://as1.example.com", "nonce-1".to_string());
-    cache.set_nonce(&key, "https://as2.example.com", "nonce-2".to_string());
+    let first_nonce = DPoPKey::generate().jwk_thumbprint();
+    let second_nonce = DPoPKey::generate().jwk_thumbprint();
+    cache.set_nonce(&key, "https://as1.example.com", first_nonce.clone());
+    cache.set_nonce(&key, "https://as2.example.com", second_nonce.clone());
 
     assert_eq!(
         cache.get_nonce(&key, "https://as1.example.com").as_deref(),
-        Some("nonce-1")
+        Some(first_nonce.as_str())
     );
     assert_eq!(
         cache.get_nonce(&key, "https://as2.example.com").as_deref(),
-        Some("nonce-2")
+        Some(second_nonce.as_str())
     );
     assert_eq!(cache.get_nonce(&key, "https://as3.example.com"), None);
 }
@@ -972,18 +974,20 @@ fn test_f14_01_nonce_cache_update_and_lookup() {
     let cache = DPoPNonceCache::new();
     let key = DPoPKey::generate();
     let server_origin = "https://auth.example.com";
+    let first_nonce = DPoPKey::generate().jwk_thumbprint();
+    let second_nonce = DPoPKey::generate().jwk_thumbprint();
     assert_eq!(cache.get_nonce(&key, server_origin), None);
 
-    cache.set_nonce(&key, server_origin, "nonce_turn_1".to_string());
+    cache.set_nonce(&key, server_origin, first_nonce.clone());
     assert_eq!(
         cache.get_nonce(&key, server_origin).as_deref(),
-        Some("nonce_turn_1")
+        Some(first_nonce.as_str())
     );
 
-    cache.set_nonce(&key, server_origin, "nonce_turn_2".to_string());
+    cache.set_nonce(&key, server_origin, second_nonce.clone());
     assert_eq!(
         cache.get_nonce(&key, server_origin).as_deref(),
-        Some("nonce_turn_2")
+        Some(second_nonce.as_str())
     );
 }
 

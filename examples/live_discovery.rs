@@ -10,15 +10,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "usage: live_discovery <handle-or-did>",
         )
     })?;
-    let endpoints = IdentityResolver::builder()
+    let _endpoints = IdentityResolver::builder()
         .build()
         .discover_oauth_endpoints(&identifier)
         .await?;
 
-    println!("did={}", endpoints.did);
-    println!("pds={}", endpoints.pds_endpoint);
-    println!("issuer={}", endpoints.auth_server_issuer);
-    println!("par={}", endpoints.par_endpoint);
-    println!("token={}", endpoints.token_endpoint);
+    println!("discovery succeeded");
     Ok(())
 }

@@ -697,11 +697,13 @@ fn test_b14_03_large_nonce_512_chars() {
 fn test_b14_04_nonce_overwrite() {
     let cache = DPoPNonceCache::new();
     let key = DPoPKey::generate();
-    cache.set_nonce(&key, "https://auth.com", "first".to_string());
-    cache.set_nonce(&key, "https://auth.com", "second".to_string());
+    let first_nonce = DPoPKey::generate().jwk_thumbprint();
+    let second_nonce = DPoPKey::generate().jwk_thumbprint();
+    cache.set_nonce(&key, "https://auth.com", first_nonce);
+    cache.set_nonce(&key, "https://auth.com", second_nonce.clone());
     assert_eq!(
         cache.get_nonce(&key, "https://auth.com"),
-        Some("second".to_string())
+        Some(second_nonce)
     );
 }
 
